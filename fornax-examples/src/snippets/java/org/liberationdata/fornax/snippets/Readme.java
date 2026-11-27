@@ -3,6 +3,7 @@ package org.liberationdata.fornax.snippets;
 import org.liberationdata.fornax.Scored;
 import org.liberationdata.fornax.Vectors;
 import org.liberationdata.fornax.acestep.AceStepModel;
+import org.liberationdata.fornax.jitllm.JitLlmModel;
 import org.liberationdata.fornax.llama.LlamaModel;
 import org.liberationdata.fornax.llama.LlamaModel.EmbedOptions;
 import org.liberationdata.fornax.llama.LlamaModel.Image;
@@ -23,6 +24,14 @@ class Readme {
             llm.chat(List.of(Message.user("Name a country song about a robot.")), Options.DEFAULT, System.out::print);
         }
         // --8<-- [end:chat]
+    }
+
+    void jitllm() {
+        // --8<-- [start:jitllm]
+        try (var llm = new JitLlmModel("unsloth/Qwen3-4B-Instruct-2507-GGUF:Q4_K_M")) {   // same messages, options and result as LlamaModel
+            llm.chat(List.of(Message.user("Name a country song about a robot.")), Options.DEFAULT, System.out::print);
+        }
+        // --8<-- [end:jitllm]
     }
 
     void models(String requestJson, String invoiceSchema) throws Exception {

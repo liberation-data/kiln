@@ -148,4 +148,28 @@ class PooledEnginesTest {
         assertTrue(e.getMessage().contains("contextSize"), e.getMessage());
         assertEquals(before, reapers.getAsLong(), "no model pool left behind");
     }
+
+    PooledEngines jitllm(boolean allowDownloads, String... models) {
+        return new PooledEngines(hub(), new ModelPool(1L << 30, null), List.of(models), 0, 1, PullListener.NONE, s -> {},
+                allowDownloads, FornaxServer.LanguageEngine.JITLLM);
+    }
+
+    @Test void jitllmRefusesWhatItCantRunBeforeLoadingAnything() {
+        try (var e = jitllm(true)) {
+            e.checkChat("qwen3-4b", false);
+            ApiError vision = assertThrows(ApiError.class, () -> e.checkChat("qwen3-vl-4b", false));
+            assertEquals(400, vision.status);
+            assertTrue(vision.getMessage().contains("vision model"), vision.getMessage());
+            ApiError images = assertThrows(ApiError.class, () -> e.checkChat("qwen3-4b", true));
+            assertEquals(400, images.status);
+            assertTrue(images.getMessage().contains("jitllm"), images.getMessage());
+            assertEquals(1, e.slots(e.find("qwen3-4b", Use.CHAT, false)));
+        }
+        try (var e = jitllm(false, "qwen3-vl-4b")) {   // offline: a download would fail differently
+            ApiError startup = assertThrows(ApiError.class, e::warm);
+            assertTrue(startup.getMessage().contains("vision model"), startup.getMessage());
+        }
+        assertThrows(IllegalArgumentException.class, () -> new PooledEngines(hub(), new ModelPool(1L << 30, null), List.of(),
+                2048, 4, PullListener.NONE, s -> {}, false, FornaxServer.LanguageEngine.JITLLM));
+    }
 }

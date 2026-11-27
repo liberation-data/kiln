@@ -11,6 +11,7 @@ rootProject.name = 'fornax'
 
 include 'fornax-core'     // native library loading, Hugging Face cache lookup, audio
 include 'fornax-llama'    // llama.cpp: GGUF language models
+include 'fornax-jitllm'   // jitllm: GGUF language models in Java, on the GPU through TornadoVM
 include 'fornax-tts'      // llama.cpp text to speech: Kokoro, ZONOS3, LFM3-Audio, ...
 include 'fornax-sd'       // stable-diffusion.cpp: FLUX, Qwen-Image, SD, Wan, LTX
 include 'fornax-acestep'  // acestep.cpp: ACE-Step 1.5 songs

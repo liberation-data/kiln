@@ -259,4 +259,27 @@ class CommandsTest {
                 "ace-step-turbo", "--port", "0"), hub, System.out, System.err));
         assertTrue(e.getMessage().contains("ace-step-turbo is a song model"), e.getMessage());
     }
+
+    @Test
+    void jitllmChatMistakesAreSaidBeforeAnyDownload() {
+        assertEquals(2, run("chat", "qwen3-4b", "hi", "--engine", "jitllm", "--gpu-layers", "5"));
+        assertTrue(err.toString().contains("--gpu-layers is for llama.cpp"), err.toString());
+        assertEquals(2, run("chat", "qwen3-4b", "hi", "--engine", "vllm"));
+        assertTrue(err.toString().contains("--engine must be llama.cpp or jitllm, not vllm"), err.toString());
+        assertEquals(1, run("chat", "qwen3-vl-4b", "hi", "--engine", "jitllm"));
+        assertTrue(err.toString().contains("qwen3-vl-4b is a vision model"), err.toString());
+        assertEquals(2, run("server", "--engine", "jitllm", "--parallel", "2", "--ctx", "2048"));
+        assertTrue(err.toString().contains("--parallel is for llama.cpp"), err.toString());
+        String before = System.getProperty("fornax.tornadovm.home");
+        System.setProperty("fornax.tornadovm.home", tmp.resolve("no-sdk").toString());
+        try {
+            // a model by reference would be downloaded first: the missing SDK is said before that
+            assertEquals(1, run("chat", "someone/model-GGUF:Q4_K_M", "hi", "--engine", "jitllm"));
+            assertTrue(err.toString().contains("has no tornado-argfile"), err.toString());
+            assertEquals(1, run("server", "--engine", "jitllm", "-m", "someone/model-GGUF:Q4_K_M", "--port", "0"));
+            assertTrue(err.toString().contains("has no tornado-argfile"), err.toString());
+        } finally {
+            if (before == null) System.clearProperty("fornax.tornadovm.home"); else System.setProperty("fornax.tornadovm.home", before);
+        }
+    }
 }

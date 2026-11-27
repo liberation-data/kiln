@@ -16,7 +16,7 @@ import java.util.Set;
 
 /** {@code fornax server}: Fornax's engines behind an OpenAI-compatible HTTP API ({@link FornaxServer}). */
 final class Server {
-    static final Set<String> OPTIONS = Set.of("model", "port", "host", "api-key", "cors", "budget-gb", "ctx", "idle-minutes", "parallel");
+    static final Set<String> OPTIONS = Set.of("model", "port", "host", "api-key", "cors", "budget-gb", "ctx", "idle-minutes", "parallel", "engine");
     static final Set<String> FLAGS = Set.of("allow-downloads");
     static final Map<String, String> SHORT = Map.of("m", "model");
 
@@ -46,6 +46,9 @@ final class Server {
               --ctx N              context size for language and embedding models (default 8192; 0 = the model's own)
               --parallel N         chat requests each language model answers at once, decoded together in one batch
                                    (default 1); each gets its own --ctx, which --budget-gb counts. Vision models: 1
+              --engine E           what runs language and embedding models: llama.cpp (default) or jitllm, a Java
+                                   engine on the GPU through TornadoVM (needs TORNADOVM_HOME; no tools, JSON
+                                   schemas, images or --parallel)
               --allow-downloads    let a request name any model, downloading it on first use (default: only the -m
                                    models and catalogue models already downloaded)
 
@@ -81,10 +84,14 @@ final class Server {
         int parallel = a.intOption("parallel", 1);
         if (parallel < 1 || parallel > 256) throw new UsageException("--parallel must be from 1 to 256");
         if (parallel > 1 && ctx == 0) throw new UsageException("--parallel needs a context size for each request: --ctx N, not 0");
+        var engine = Chat.engine(a) == Chat.Engine.JITLLM ? FornaxServer.LanguageEngine.JITLLM : FornaxServer.LanguageEngine.LLAMA_CPP;
+        if (parallel > 1 && engine == FornaxServer.LanguageEngine.JITLLM)
+            throw new UsageException("--parallel is for llama.cpp; jitllm answers one request at a time per model");
         boolean terminal = Main.terminal();
 
         var b = FornaxServer.builder().host(host).port(port).apiKey(key).hub(hub).budgetBytes((long) (budget * (1L << 30)))
                 .idleTimeout(idle == 0 ? null : Duration.ofMinutes(idle)).contextSize(ctx).parallel(parallel)
+                .languageEngine(engine)
                 .allowDownloads(a.has("allow-downloads"))
                 .pullListener(new PullLine(err, terminal)).log(s -> err.println("[fornax] " + s));
         for (String origin : a.all("cors")) b.corsOrigin(origin);

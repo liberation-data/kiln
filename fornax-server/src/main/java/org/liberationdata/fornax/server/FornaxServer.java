@@ -139,7 +139,7 @@ public final class FornaxServer implements AutoCloseable {
             this.warm = () -> {};
         } else {
             var pooled = new PooledEngines(b.hub != null ? b.hub : FornaxHub.standard(), new ModelPool(b.budgetBytes, b.idleTimeout),
-                    b.models, b.contextSize, b.parallel, b.pulls, b.log, b.allowDownloads);
+                    b.models, b.contextSize, b.parallel, b.pulls, b.log, b.allowDownloads, b.languageEngine);
             this.engines = pooled;
             this.warm = pooled::warm;
         }
@@ -695,6 +695,19 @@ public final class FornaxServer implements AutoCloseable {
         return b;
     }
 
+    /** What runs the language and embedding models. Images, speech and transcription always run on their own engines. */
+    public enum LanguageEngine {
+        /** llama.cpp (fornax-llama): every feature, vision models included. The default. */
+        LLAMA_CPP,
+        /**
+         * jitllm (fornax-jitllm), a Java engine on the GPU through TornadoVM: chat, streaming and embeddings. A request
+         * with tools, a JSON schema or images is refused (400); vision models are llama.cpp's; one request at a time
+         * per model; {@code min_p} and {@code top_k} are ignored (it samples with temperature and top-p). Needs a
+         * TornadoVM SDK ({@code TORNADOVM_HOME}).
+         */
+        JITLLM
+    }
+
     /** How the server is set up. Every setting has a default: {@code FornaxServer.builder().build().start()} serves on 127.0.0.1:54154. */
     public static final class Builder {
         private String host = "127.0.0.1";
@@ -712,6 +725,7 @@ public final class FornaxServer implements AutoCloseable {
         private long maxBodyBytes = 64L << 20;
         private long maxBufferedBytes = 256L << 20;
         private boolean allowDownloads;
+        private LanguageEngine languageEngine = LanguageEngine.LLAMA_CPP;
         private Engines engines;
 
         private Builder() {}
@@ -799,6 +813,9 @@ public final class FornaxServer implements AutoCloseable {
          */
         public Builder allowDownloads(boolean allow) { this.allowDownloads = allow; return this; }
 
+        /** What runs the language and embedding models (default {@link LanguageEngine#LLAMA_CPP}). */
+        public Builder languageEngine(LanguageEngine engine) { this.languageEngine = Objects.requireNonNull(engine, "engine"); return this; }
+
         /** The largest request body taken (default 64 MB: an image or a WAV file in it). */
         public Builder maxBodyBytes(long bytes) {
             if (bytes <= 0) throw new IllegalArgumentException("maxBodyBytes must be more than 0, not " + bytes);
@@ -827,6 +844,11 @@ public final class FornaxServer implements AutoCloseable {
             // here, before the server makes its model pool, whose reaper thread a refused build would leave running
             if (engines == null && parallel > 1 && contextSize == 0)
                 throw new IllegalArgumentException("parallel needs each slot's context size: set contextSize (not 0)");
+            if (engines == null && parallel > 1 && languageEngine == LanguageEngine.JITLLM)
+                throw new IllegalArgumentException("parallel is for llama.cpp; jitllm answers one request at a time per model");
+            // jitllm's TornadoVM SDK is checked before any model is downloaded
+            if (engines == null && languageEngine == LanguageEngine.JITLLM)
+                org.liberationdata.fornax.jitllm.JitLlmModel.checkRuntime();
             return new FornaxServer(this);
         }
 

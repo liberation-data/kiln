@@ -42,6 +42,7 @@ Fornax binds native inference engines with Java's Foreign Function & Memory API 
 | Module | Engine | Models |
 |---|---|---|
 | `fornax-llama` | [llama.cpp](https://github.com/ggml-org/llama.cpp) (with `mtmd` for images) | any GGUF language model (Qwen, Llama, Gemma, Mistral, ...); vision language models (Qwen3-VL, PaddleOCR-VL, MedGemma, ...); embedding and reranker models (Qwen3-Embedding, Qwen3-Reranker) |
+| `fornax-jitllm` | [jitllm](https://github.com/beehive-lab/jitllm) (Java, on the GPU through [TornadoVM](https://github.com/beehive-lab/TornadoVM)) | GGUF language and embedding models (Llama, Qwen, Gemma, Mistral, Granite, ...): an alternative to `fornax-llama` for text |
 | `fornax-tts` | [llama.cpp](https://github.com/ggml-org/llama.cpp) (`mtmd`) | text to speech: Kokoro, ZONOS3, LFM3-Audio, Chatterbox, VoxCPM2, ... |
 | `fornax-sd` | [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp) | FLUX.1/FLUX.2, Qwen-Image and Qwen-Image-Edit, SD 1.x/2.x/XL/3, Wan, LTX |
 | `fornax-acestep` | [acestep.cpp](https://github.com/ServeurpersoCom/acestep.cpp) | ACE-Step 1.5 songs (vocals, lyrics, up to several minutes) |
@@ -70,6 +71,36 @@ try (var vlm = new LlamaModel(LlamaModel.Weights.QWEN3_VL_4B)) {   // the GGUF p
 `DiffusionModel` also edits: a `Request` can carry reference images (Qwen-Image-Edit, FLUX.2), an init image and
 strength (img2img), a mask (inpainting), a ControlNet hint and LoRAs. `Upscaler` runs ESRGAN models. See the
 [images guide](https://fornax4j.org/docs/guides/images/).
+
+## jitllm: language models in Java
+
+`fornax-jitllm` runs GGUF language and embedding models on [jitllm](https://github.com/beehive-lab/jitllm), an
+inference engine written in Java whose GPU kernels [TornadoVM](https://github.com/beehive-lab/TornadoVM) compiles at
+run time for CUDA, OpenCL or Metal. `JitLlmModel` takes the same `Message`s and `Options` as `LlamaModel` and gives the
+same `Result`:
+
+<!-- snippet: Readme#jitllm -->
+```java
+try (var llm = new JitLlmModel("unsloth/Qwen3-4B-Instruct-2507-GGUF:Q4_K_M")) {   // same messages, options and result as LlamaModel
+    llm.chat(List.of(Message.user("Name a country song about a robot.")), Options.DEFAULT, System.out::print);
+}
+```
+
+It needs a TornadoVM SDK for your JDK and GPU (`TORNADOVM_HOME`, 8.2.0 or newer). A JVM started with the SDK's
+`tornado-argfile`, `--add-modules jdk.incubator.vector`, `-Duse.tornadovm=true` and
+`-Dtornado.tvm.maxbytecodesize=65536` runs the model in-process; any other JVM runs it in a
+[worker process](https://fornax4j.org/docs/guides/isolation/) that Fornax starts with those options, so a plain `java`
+or `./gradlew run` works too. TornadoVM's device memory budget is 14 GB, as for the
+`jitllm` command; set `-Dtornado.device.memory=...` to change it. From the command line:
+
+```sh
+fornax chat qwen3-4b "Write a haiku about a kiln" --engine jitllm
+fornax server -m qwen3-4b --engine jitllm      # chat (streaming) and embeddings over the OpenAI API
+```
+
+`FornaxServer.builder().languageEngine(LanguageEngine.JITLLM)` does the same from Java. jitllm runs text only: tool
+calls, JSON-schema output, images, reranking and `--parallel` stay with llama.cpp, and the server answers a request
+that needs them with a 400. It samples with temperature and top-p: `min_p` and `top_k` are ignored.
 
 ## Getting started
 

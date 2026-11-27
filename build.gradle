@@ -61,6 +61,7 @@ configure(subprojects.findAll { !(it.name in pomOnly) }) {
 ext.published = [
     'fornax-core'   : 'Fornax core: native library loading, model download and Hugging Face cache lookup, audio, the model pool and vector search',
     'fornax-llama'  : 'Fornax llama: GGUF language, vision language, embedding and reranker models through llama.cpp, in-process via Java FFM',
+    'fornax-jitllm' : 'Fornax jitllm: GGUF language and embedding models through jitllm, a Java inference engine on the GPU via TornadoVM',
     'fornax-tts'    : 'Fornax TTS: text to speech through llama.cpp (mtmd), in-process via Java FFM',
     'fornax-sd'     : 'Fornax SD: images and video through stable-diffusion.cpp, in-process via Java FFM',
     'fornax-acestep': 'Fornax ACE-Step: ACE-Step 1.5 songs through acestep.cpp, in-process via Java FFM',
@@ -139,6 +140,7 @@ configure(subprojects.findAll { it.name.startsWith('fornax-natives-') }) { p ->
 project(':fornax-examples') {
     dependencies {
         implementation project(':fornax-llama')
+        implementation project(':fornax-jitllm')
         implementation project(':fornax-tts')
         implementation project(':fornax-sd')
         implementation project(':fornax-acestep')
@@ -217,6 +219,20 @@ project(':fornax-core') {
     }
 }
 
+project(':fornax-jitllm') {
+    dependencies {
+        api project(':fornax-llama')   // its Message, Options and Result: code written for LlamaModel runs on JitLlmModel
+        api "io.github.beehive-lab:jitllm:${jitllmVersion}-jdk22plus"
+    }
+    // The tests that run a model need a TornadoVM SDK (TORNADOVM_HOME) and -PjitllmModel=path/to/model.gguf
+    tasks.withType(Test).configureEach {
+        def model = providers.gradleProperty('jitllmModel').orNull
+        if (model) systemProperty 'jitllm.test.model', model
+        def thinker = providers.gradleProperty('jitllmThinkingModel').orNull   // a Qwen3 GGUF: thinking on and off
+        if (thinker) systemProperty 'jitllm.test.thinkingModel', thinker
+    }
+}
+
 project(':fornax-llama') {
     // ./gradlew :fornax-llama:isolationBench --args=model.gguf: tokens/s in-process vs isolated, one model at a time
     tasks.register('isolationBench', JavaExec) {
@@ -248,6 +264,7 @@ project(':fornax-demucs') {
 project(':fornax-server') {
     dependencies {
         api project(':fornax-llama')
+        implementation project(':fornax-jitllm')
         implementation project(':fornax-sd')
         implementation project(':fornax-tts')
         implementation project(':fornax-whisper')
@@ -265,6 +282,7 @@ project(':fornax-cli') {
                                    : gradle.nativesDirs.keySet().collect { project(":fornax-natives-${it}") }
     dependencies {
         implementation project(':fornax-llama')
+        implementation project(':fornax-jitllm')
         implementation project(':fornax-sd')
         implementation project(':fornax-acestep')
         implementation project(':fornax-yue2')

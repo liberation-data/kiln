@@ -1,0 +1,188 @@
+Vulkan: flash attention keeps its output accumulator in f32 when F32 precision is asked for.
+
+The FA shaders accumulate the unnormalised sum of P*V in O_TYPE, which was FLOAT_TYPE: f16 in the fp16 build, even in
+the variant chosen for GGML_PREC_F32 (that flag only widened the scores and row sums). With attention spread evenly over a
+long KV the sum reaches about n_kv * |mean(V)| and overflows 65504 to inf; the result is clamped to +-65504. LTX-2.5's
+video-to-audio cross-attention (268 audio queries over 38,808 video tokens at 257 frames, 1344x896) hit it and the refine
+pass came out as mush (fornax#112). O_TYPE now follows ACC_TYPE (f16 only when f16 accumulation is allowed), on the
+scalar, coopmat1 and coopmat2 paths; the shared-memory estimates count the wider accumulator. coopmat1's row-tiled
+build (Br 32) no longer packs the PV tile it stages through sfsh into f16 pairs: sfsh is ACC_TYPE, so O now fits it as
+is. Upstream ggml-org/llama.cpp master (2026-11-28) still has the f16 accumulator; not yet reported there. Drop this
+once the pinned engines have a fix.
+
+diff --git a/ggml/src/ggml-vulkan/ggml-vulkan.cpp b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
+index 76550d6..6ae0a92 100644
+--- a/ggml/src/ggml-vulkan/ggml-vulkan.cpp
++++ b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
+@@ -8901,7 +8901,6 @@ void ggml_vk_mul_mat_id(ggml_backend_vk_context * ctx, vk_context& subctx, const
+ }
+ 
+ bool ggml_vk_flash_attn_scalar_shmem_support(const vk_device& device, const vk_fa_tuning_params& params, uint32_t hsk, uint32_t hsv, bool f32acc, ggml_type k_type, ggml_type v_type) {
+-    GGML_UNUSED(f32acc);
+     // Needs to be kept up to date on shader changes
+     const uint32_t wg_size = params.workgroup_size;
+     const uint32_t Br = params.block_rows;
+@@ -8914,7 +8913,8 @@ bool ggml_vk_flash_attn_scalar_shmem_support(const vk_device& device, const vk_f
+ 
+     // tmpsh is overestimated slightly
+     const uint32_t tmpsh = wg_size * sizeof(float);
+-    const uint32_t tmpshv4 = wg_size * 4 * float_type_size;
++    // tmpshv4 holds the output accumulator (O_TYPE): f32 unless f16 accumulation is allowed
++    const uint32_t tmpshv4 = wg_size * 4 * (f32acc ? sizeof(float) : float_type_size);
+ 
+     const uint32_t masksh = Bc * (Br + 1) * float_type_size;
+     // DATA_A_IQ4_NL is compiled into the FA shaders unconditionally, so its shared table is always allocated.
+@@ -8991,7 +8991,8 @@ bool ggml_vk_flash_attn_coopmat_shmem_support(const vk_device& device, const vk_
+ 
+     uint32_t pvsh = 0;
+     if (Br <= MatBr) {
+-        const uint32_t pvsh_elem_size = (k_type == GGML_TYPE_BF16) ? 16u : f16vec4;
++        // The PVMat accumulator (O_TYPE) is f32 for BF16 (no bf16 accumulator support) and with f32acc
++        const uint32_t pvsh_elem_size = (k_type == GGML_TYPE_BF16 || f32acc) ? 16u : f16vec4;
+         const uint32_t osh_stride = params.row_split * MatBr / 4;
+         pvsh = Br * osh_stride * pvsh_elem_size;
+     }
+diff --git a/ggml/src/ggml-vulkan/vulkan-shaders/flash_attn.comp b/ggml/src/ggml-vulkan/vulkan-shaders/flash_attn.comp
+index c1e4606..a4f731f 100644
+--- a/ggml/src/ggml-vulkan/vulkan-shaders/flash_attn.comp
++++ b/ggml/src/ggml-vulkan/vulkan-shaders/flash_attn.comp
+@@ -45,7 +45,7 @@ layout (binding = 3) readonly buffer M {float16_t data_m[];};
+ // If SubGroupSize is set to 0 then only use shmem reductions
+ const uint32_t tmpsh_size = (SubGroupSize > 0) ? (row_split == 1 ? num_subgroups * D_split : num_subgroups) : WorkGroupSize;
+ shared float tmpsh[tmpsh_size];
+-shared FLOAT_TYPEV4 tmpshv4[tmpsh_size];
++shared O_TYPEV4 tmpshv4[tmpsh_size];
+ 
+ const uint32_t masksh_stride = Br + 1;
+ shared FLOAT_TYPE masksh[Bc * masksh_stride];
+@@ -145,10 +145,10 @@ void main() {
+     }
+     barrier();
+ 
+-    FLOAT_TYPEV4 Of[rows_per_thread][HSV_per_thread / 4];
++    O_TYPEV4 Of[rows_per_thread][HSV_per_thread / 4];
+     [[unroll]] for (uint32_t d = 0; d < HSV_per_thread / 4; ++d) {
+         [[unroll]] for (uint32_t r = 0; r < rows_per_thread; ++r) {
+-            Of[r][d] = FLOAT_TYPEV4(0.0);
++            Of[r][d] = O_TYPEV4(0.0);
+         }
+     }
+ 
+@@ -484,7 +484,7 @@ void main() {
+ 
+         [[unroll]] for (uint32_t d = 0; d < HSV_per_thread / 4; ++d) {
+             [[unroll]] for (uint32_t r = 0; r < rows_per_thread; ++r) {
+-                Of[r][d] = FLOAT_TYPE(eMf[r]) * Of[r][d];
++                Of[r][d] = O_TYPE(eMf[r]) * Of[r][d];
+             }
+         }
+ 
+@@ -539,7 +539,7 @@ void main() {
+                     Vf = FLOAT_TYPEV4(data_vv4[v_offset / 4 + vcol * v_stride / 4 + d * D_split + d_tid]);
+                 }
+                 [[unroll]] for (uint32_t r = 0; r < rows_per_thread; ++r) {
+-                    Of[r][d] += FLOAT_TYPEV4(Pf[r] * Vf);
++                    Of[r][d] += O_TYPEV4(Pf[r] * Vf);
+                 }
+             }
+         }
+@@ -622,7 +622,7 @@ void main() {
+         }
+ 
+         [[unroll]] for (uint32_t d = 0; d < HSV_per_thread / 4; ++d) {
+-            Of[r][d] = FLOAT_TYPE(eMf) * Of[r][d];
++            Of[r][d] = O_TYPE(eMf) * Of[r][d];
+ 
+             if (SubGroupSize > 0) {
+                 [[unroll]] for (uint s = D_split; s < SubGroupSize; s *= 2) {
+@@ -632,7 +632,7 @@ void main() {
+                         // Something about f16vec4 subgroupShuffleXor is broken on AMD Windows RDNA2 and below.
+                         // Shuffle full vec4 as workaround.
+                         // See https://github.com/ggml-org/llama.cpp/issues/19881#issuecomment-3958643697
+-                        Of[r][d] += FLOAT_TYPEV4(subgroupShuffleXor(vec4(Of[r][d]), s));
++                        Of[r][d] += O_TYPEV4(subgroupShuffleXor(vec4(Of[r][d]), s));
+                     }
+                 }
+                 if (row_split == 1) {
+@@ -721,7 +721,7 @@ void main() {
+                 ms = exp(Mf[r] - sink);
+ 
+                 [[unroll]] for (uint32_t d = 0; d < HSV_per_thread / 4; ++d) {
+-                    Of[r][d] *= FLOAT_TYPE(ms);
++                    Of[r][d] *= O_TYPE(ms);
+                 }
+             } else {
+                 vs = exp(sink - Mf[r]);
+@@ -738,9 +738,9 @@ void main() {
+ 
+     [[unroll]] for (uint32_t d = 0; d < HSV_per_thread / 4; ++d) {
+         [[unroll]] for (uint32_t r = 0; r < rows_per_thread; ++r) {
+-            Of[r][d] *= FLOAT_TYPE(Lfrcp[r]);
++            Of[r][d] *= O_TYPE(Lfrcp[r]);
+ #if defined(FLOAT_TYPE_MAX)
+-            Of[r][d] = clamp(Of[r][d], -FLOAT_TYPE_MAX, FLOAT_TYPE_MAX);
++            Of[r][d] = clamp(Of[r][d], O_TYPE(-FLOAT_TYPE_MAX), O_TYPE(FLOAT_TYPE_MAX));
+ #endif
+         }
+     }
+diff --git a/ggml/src/ggml-vulkan/vulkan-shaders/flash_attn_base.glsl b/ggml/src/ggml-vulkan/vulkan-shaders/flash_attn_base.glsl
+index 072edfa..4a8e839 100644
+--- a/ggml/src/ggml-vulkan/vulkan-shaders/flash_attn_base.glsl
++++ b/ggml/src/ggml-vulkan/vulkan-shaders/flash_attn_base.glsl
+@@ -103,12 +103,15 @@ layout (binding = 7) readonly buffer SP {int32_t data_sparse[];};
+ 
+ #include "fa_types.glsl"
+ 
++// The output accumulator holds the unnormalised sum of P*V, which reaches about n_kv * |mean(V)| when attention is spread
++// evenly over a long KV (e.g. a few queries over tens of thousands of keys): far past f16's 65504. So it follows ACC_TYPE,
++// which is f32 unless f16 accumulation was allowed (GGML_PREC_F32 must give f32 here, as it does for S and L).
+ #if defined(BFLOAT16)
+ #define O_TYPE float
+ #define O_TYPEV4 vec4
+ #else
+-#define O_TYPE FLOAT_TYPE
+-#define O_TYPEV4 FLOAT_TYPEV4
++#define O_TYPE ACC_TYPE
++#define O_TYPEV4 ACC_TYPEV4
+ #endif
+ 
+ // These can't be `const` globals because GLSL forbids function calls in global
+diff --git a/ggml/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1.comp b/ggml/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1.comp
+index ea945ed..a56354d 100644
+--- a/ggml/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1.comp
++++ b/ggml/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1.comp
+@@ -69,16 +69,7 @@ const uint32_t osh_stride = row_split * MatBr / 4;
+ shared O_TYPEV4 pvsh[q_tiles > 1 ? 2 : Br * osh_stride];
+ 
+ shared vec4 occupancy_limiter[LIMIT_OCCUPANCY_SHMEM > 0 ? LIMIT_OCCUPANCY_SHMEM : 1];
+-#if defined(FLOAT16) && !defined(ACC_TYPE_MAX)
+-const uint32_t pv_per_acc = 2;
+-O_TYPEV4 pvsh_load(const uint32_t i) {
+-    if (q_tiles == 1) {
+-        return pvsh[i];
+-    }
+-    const uvec2 u = floatBitsToUint(vec2(sfsh[i / 2][(i % 2) * 2], sfsh[i / 2][(i % 2) * 2 + 1]));
+-    return O_TYPEV4(unpackFloat2x16(u.x), unpackFloat2x16(u.y));
+-}
+-#else
++// O_TYPE matches ACC_TYPE outside BF16, so a PV tile staged through sfsh keeps its precision there.
+ const uint32_t pv_per_acc = 1;
+ O_TYPEV4 pvsh_load(const uint32_t i) {
+     if (q_tiles == 1) {
+@@ -86,7 +77,6 @@ O_TYPEV4 pvsh_load(const uint32_t i) {
+     }
+     return O_TYPEV4(sfsh[i]);
+ }
+-#endif
+ 
+ void main() {
+ #ifdef NEEDS_INIT_IQ_SHMEM
+@@ -715,7 +705,7 @@ void main() {
+         [[unroll]] for (uint32_t r = 0; r < rows_per_thread; ++r) {
+             Of[r][d_local] *= O_TYPE(Lfrcp[r]);
+ #if defined(FLOAT_TYPE_MAX)
+-            Of[r][d_local] = clamp(Of[r][d_local], -FLOAT_TYPE_MAX, FLOAT_TYPE_MAX);
++            Of[r][d_local] = clamp(Of[r][d_local], O_TYPE(-FLOAT_TYPE_MAX), O_TYPE(FLOAT_TYPE_MAX));
+ #endif
+         }
+     }

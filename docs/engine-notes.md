@@ -64,11 +64,27 @@ surprises you.
   The patch is to be proposed upstream. HIP has no such timeout (ROCm work goes through KFD user queues, which is why
   ComfyUI never hit it) and was about 2.7× faster per LTX step than Vulkan on the 8060S (44 s against 119 s at
   672×448×313, after a slower first step), so it stays the better backend for long clips.
-- **Vulkan's long-clip output is wrong above about 37k refine tokens (#112).** With the chunking above, the two-stage
-  LTX recipe survives at 1344×896×313, but from 257 frames (38,808 refine tokens) on, the Vulkan output is haze and the
-  audio decorrelates; 241 frames (36,456) is clean. HIP with the same chunks forced on is bit-identical to HIP
-  unsplit, and the Vulkan draft stage alone is clean at 257 frames, so the fault is in Vulkan's refine pass at that
-  size (or the latent upscaler), not in the chunking arithmetic. Use HIP for long clips until #112 is fixed.
+- **Vulkan flash attention overflowed f16 on long video (#112).** With the chunking above, the two-stage LTX recipe
+  survived at 1344×896×313, but from 257 frames (38,808 refine tokens) the Vulkan output was haze and the audio
+  decorrelated, while 241 frames looked clean. HIP was right. ggml-vulkan's flash-attention shaders kept the
+  unnormalised sum of P·V in `O_TYPE`, which was f16 in the fp16 build even when F32 precision was asked for (that only
+  widened the scores and row sums). LTX's video-to-audio cross-attention has 268 audio queries over 38,808 video keys
+  and often spreads evenly over them, so the sum reaches about n_kv × |mean V| (up to 7e5 here) and overflows 65504 to
+  inf, which the shader clamps. From block 10 the audio stream blew up (std 15 → 2,773) and the audio-to-video attention
+  carried it into the picture. It depends on the data, not on a fixed size: the same node fails on its dumped inputs at
+  36,456 keys too. `native/patches/*/0004-vulkan-fa-f32-output-accumulator.patch` makes `O_TYPE` follow `ACC_TYPE` (f32
+  unless f16 accumulation is allowed) on the scalar, coopmat1 and coopmat2 paths, in every engine's ggml (all six
+  carried the f16 accumulator; in llama.cpp's newer coopmat1 the patch also stops packing PV tiles into f16 pairs).
+  After it a 257-frame Vulkan render matches HIP (PSNR 25.3 against 21.8 before, audio correlation 0.58 against 0.04).
+  On the 8060S the wider accumulator costs nothing measurable: a 97-frame two-stage render (672×448 → 1344×896) took
+  1,120.9 s against 1,118.3 s (refine steps 150.9 s against 150.5 s), and llama.cpp prompt processing on Qwen3-0.6B
+  (`llama-bench -fa 1`) ran at 8,065 against 8,082 tokens/s at 4k and 5,999 against 6,016 at 8k. Upstream
+  ggml-org/llama.cpp master still has the f16 accumulator (2026-11-28).
+
+  How it was found, for next time: the per-block CPU recompute from the GPU's own inputs was too noisy to tell (HIP
+  against the CPU differs as much), and the first checks only looked at the video stream. Feeding one backend's dumped
+  graph inputs to the other (HIP) and comparing the block outputs found block 10's audio at once, and a single-node CPU
+  check then named the `FLASH_ATTN_EXT`.
 - **HIP graphs overflow a JVM thread's stack.** ggml's HIP backend captures the graph as a HIP graph, and ROCm's
   `hip::Graph::ScheduleOneNode` recurses once per node. On a JVM thread (smaller stack than a CLI's 8 MB main
   thread) LTX segfaults in libamdhip64 during text encoding. `GGML_CUDA_DISABLE_GRAPHS=1` fixes it, and Fornax sets it by default (`-Dfornax.gpu.graphs=true` turns graphs back on).

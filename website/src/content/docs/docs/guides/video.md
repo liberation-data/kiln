@@ -172,12 +172,12 @@ amdgpu driver's 2 s compute timeout. Fornax's stable-diffusion.cpp now splits th
 same output, by default only on Vulkan (`SD_FA_CHUNK_FLOPS`, `SD_FF_CHUNK_FLOPS`); for a long clip on Vulkan also pass
 `-Dfornax.vulkan.maxNodesPerSubmit=1`. See [Troubleshooting](/docs/troubleshooting/#device-lost-or-ring-timeout-on-long-video).
 
-On Vulkan, a clip that long now renders, but the picture comes out wrong. Above about 37,000 refine tokens (257
-frames or more at 1344×896) the two-stage recipe gives a hazy, mottled clip on Vulkan, and the sound is off too.
-Up to 241 frames it is clean. The cause is under investigation in
-[#112](https://github.com/liberation-data/fornax/issues/112). Until then, render long clips on HIP.
+Long clips used to come out wrong on Vulkan: from 257 frames at 1344×896 the two-stage recipe gave a hazy, mottled
+clip and the sound was off ([#112](https://github.com/liberation-data/fornax/issues/112)). A flash-attention sum
+overflowed 16-bit floats in the cross-attention between sound and picture. Fornax's engines now keep that sum in 32-bit
+floats, and a 257-frame Vulkan render matches HIP, at no measurable cost in speed.
 
-HIP (ROCm) is the better backend for long clips anyway. It doesn't have that timeout: its work goes through user
+HIP (ROCm) is still the better backend for long clips. It doesn't have that timeout: its work goes through user
 queues that the timeout doesn't cover. It was also about 2.7× faster per LTX step on the Radeon 8060S (44 s against
 119 s at 672×448×313, after a slower first step). Build it with `native/build.sh hip`; see
 [Choosing a GPU backend](/docs/guides/gpu-backends/#hip-rocm). Fornax turns off ggml's HIP graphs by default, which

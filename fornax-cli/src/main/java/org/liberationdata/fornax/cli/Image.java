@@ -34,8 +34,8 @@ final class Image {
                                    a folder, or a name ending in /, puts image.png in it)
               --width N            default 1024, or the --ref image's; a multiple of 16
               --height N           default 1024, or the --ref image's; a multiple of 16
-              --steps N            default 20 (8 for z-image-turbo)
-              --cfg X              guidance scale (default 4.0 for flux2-klein, 2.5 for the Qwen-Image models, 1.0 for z-image-turbo)
+              --steps N            default 20 (8 for z-image-turbo and ernie-image-turbo)
+              --cfg X              guidance scale (default 4.0 for flux2-klein, 2.5 for the Qwen-Image models, 1.0 for the Turbos)
               --seed N             default random; the seed is printed, to make the same image again
               --ref FILE           an image to edit (qwen-image-edit needs one)""".formatted(Models.ids(Kind.IMAGE));
 

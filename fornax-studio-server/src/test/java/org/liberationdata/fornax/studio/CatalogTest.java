@@ -92,6 +92,17 @@ class CatalogTest {
         assertTrue(catalog.chatModels().isEmpty());
     }
 
+    @Test void ernieImagesDiffusionGgufIsNotAChatModelButItsMinistralEncoderIs() throws Exception {
+        file("unsloth/ERNIE-Image-Turbo-GGUF", "a", "ernie-image-turbo-Q8_0.gguf", 4);
+        file("unsloth/Ministral-3-3B-Instruct-2512-GGUF", "a", "Ministral-3-3B-Instruct-2512-Q8_0.gguf", 2);
+        file("Comfy-Org/flux2-dev", "a", "split_files/vae/flux2-vae.safetensors", 1);
+        var catalog = new Catalog(root);
+        // Ministral 3 3B Instruct chats in its own right, as well as encoding ERNIE's prompts.
+        assertEquals(List.of("chat:unsloth/Ministral-3-3B-Instruct-2512-GGUF/Ministral-3-3B-Instruct-2512-Q8_0.gguf"),
+                catalog.chatModels().stream().map(Catalog.Model::id).toList());
+        assertTrue(catalog.find("image:ernie-image-turbo").orElseThrow().available());
+    }
+
     @Test void ocria1IsOfferedInInspectWithThinkingOffAndItsLicenseNotAsAChatModel() throws Exception {
         file(LlamaModel.Weights.OCRIA_1.repo, "a", LlamaModel.Weights.OCRIA_1.modelFile, 4);
         file(LlamaModel.Weights.OCRIA_1.repo, "a", LlamaModel.Weights.OCRIA_1.mmprojFile, 1);

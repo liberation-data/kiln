@@ -83,7 +83,7 @@ class CommandsTest {
     @Test
     void theWrongKindOfModelIsRefusedWithTheRightOnes() throws Exception {
         assertEquals(1, run("image", "qwen3-4b", "a fox", "--out", tmp.resolve("a.png").toString()));
-        assertEquals("fornax image: qwen3-4b is a chat model; image takes an image model: flux2-klein, qwen-image, qwen-image-edit, z-image-turbo\n",
+        assertEquals("fornax image: qwen3-4b is a chat model; image takes an image model: flux2-klein, qwen-image, qwen-image-edit, z-image-turbo, ernie-image-turbo\n",
                 err.toString());
         assertEquals(1, run("song", "flux2-klein", "folk", "--out", tmp.toString()));
         assertTrue(err.toString().contains("flux2-klein is an image model; song takes a song model: ace-step-turbo"), err.toString());

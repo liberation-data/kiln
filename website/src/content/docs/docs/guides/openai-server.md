@@ -105,10 +105,10 @@ r = client.images.generate(model="flux2-klein", prompt="a brick kiln at dusk", s
 open("kiln.png", "wb").write(base64.b64decode(r.data[0].b64_json))
 ```
 
-`model` is an image alias (`flux2-klein`, `qwen-image`, `z-image-turbo`); `size` is `WIDTHxHEIGHT` in multiples of 16, up to 4096 a side and 4
+`model` is an image alias (`flux2-klein`, `qwen-image`, `z-image-turbo`, `ernie-image-turbo`); `size` is `WIDTHxHEIGHT` in multiples of 16, up to 4096 a side and 4
 megapixels (2048x2048, or 4096x1024; default 1024x1024); `n` makes up to 8, with seeds counting up from `seed`.
-Beyond OpenAI's: `seed`, `steps` (default 20, 8 for z-image-turbo; at most 100)
-and `cfg_scale` (4.0 for flux2-klein, 2.5 for the Qwen-Image models, 1.0 for z-image-turbo). Images come back as `b64_json` PNGs; the
+Beyond OpenAI's: `seed`, `steps` (default 20, 8 for the two Turbos; at most 100)
+and `cfg_scale` (4.0 for flux2-klein, 2.5 for the Qwen-Image models, 1.0 for z-image-turbo and ernie-image-turbo). Images come back as `b64_json` PNGs; the
 server keeps no files, so `response_format: "url"` is refused.
 
 ### Speech and transcription

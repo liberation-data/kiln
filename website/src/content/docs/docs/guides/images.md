@@ -1,17 +1,17 @@
 ---
 title: Images
-description: Generate and edit images from Java with stable-diffusion.cpp - FLUX.2 [klein], Qwen-Image, Qwen-Image-Edit and Z-Image - and pass any engine option through.
+description: Generate and edit images from Java with stable-diffusion.cpp - FLUX.2 [klein], Qwen-Image, Qwen-Image-Edit, Z-Image and ERNIE-Image - and pass any engine option through.
 ---
 
 `fornax-sd` runs image (and [video](/docs/guides/video/)) diffusion models through
 [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp): FLUX.1 and FLUX.2, Qwen-Image and
-Qwen-Image-Edit, Z-Image, SD 1.x, 2.x, XL and 3, and more. The class is `DiffusionModel`.
+Qwen-Image-Edit, Z-Image, ERNIE-Image, SD 1.x, 2.x, XL and 3, and more. The class is `DiffusionModel`.
 
 A diffusion model is usually several files: the **diffusion model** itself, a **VAE** that turns latents into pixels,
 and a **text encoder** (a language model, for the models on this page). You name each one in a `Config`, and the
 model loads all of them in its constructor and keeps them loaded across calls.
 
-For the models Fornax's catalogue knows (`flux2-klein`, `qwen-image`, `qwen-image-edit`, `z-image-turbo`), `Config.builder().model(name)`
+For the models Fornax's catalogue knows (`flux2-klein`, `qwen-image`, `qwen-image-edit`, `z-image-turbo`, `ernie-image-turbo`), `Config.builder().model(name)`
 names every file at once and downloads what's missing. Each file option also takes a
 [model reference](/docs/guides/models/#by-reference) in place of a path, such as a GGUF quant from another repo.
 
@@ -303,6 +303,20 @@ try (var images = new DiffusionModel(config)) {
 
 The catalogue knows it as `z-image-turbo`, so `fornax image z-image-turbo "..."`, the OpenAI-compatible server and
 Fornax Studio use these settings (8 steps, CFG 1.0) unless told otherwise.
+
+## ERNIE-Image-Turbo
+
+Baidu's ERNIE-Image-Turbo (Apache-2.0) is distilled like Z-Image Turbo: 8 steps at CFG 1. It uses the FLUX.2 VAE
+that klein uses and a Ministral 3 3B text encoder, here both as GGUFs:
+
+```sh
+fornax pull ernie-image-turbo     # or: hf download unsloth/ERNIE-Image-Turbo-GGUF ernie-image-turbo-Q8_0.gguf, and
+                                  #     unsloth/Ministral-3-3B-Instruct-2512-GGUF Ministral-3-3B-Instruct-2512-Q8_0.gguf
+fornax image ernie-image-turbo "a brick kiln at dusk in the Australian outback, warm light, photograph"
+```
+
+On the Radeon 8060S with Vulkan it draws 1024x1024 in about 60 s, against Z-Image Turbo's 100 s (bf16), and both
+spelled a neon sign's word right in a test prompt.
 
 ## Options
 

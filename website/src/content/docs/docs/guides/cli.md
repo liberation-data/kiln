@@ -154,9 +154,9 @@ that isn't in the cache yet before loading it, with the same progress line as `f
 kind is refused before anything is downloaded, with the ones that fit: `fornax image qwen3-4b` says qwen3-4b is a
 chat model and names the image models.
 
-- **image** takes an image alias (`flux2-klein`, `qwen-image`, `qwen-image-edit`, `z-image-turbo`) and draws
-  1024x1024 in 20 steps (8 for Z-Image Turbo), at the guidance the model is tuned for (4.0 for FLUX.2 [klein], 2.5
-  for Qwen-Image, 1.0 for Z-Image Turbo). Width and height are
+- **image** takes an image alias (`flux2-klein`, `qwen-image`, `qwen-image-edit`, `z-image-turbo`, `ernie-image-turbo`) and draws
+  1024x1024 in 20 steps (8 for Z-Image Turbo and ERNIE-Image-Turbo), at the guidance the model is tuned for (4.0 for FLUX.2
+  [klein], 2.5 for Qwen-Image, 1.0 for the Turbos). Width and height are
   multiples of 16. `qwen-image-edit` edits the image given with `--ref`, at that image's size unless told otherwise.
   The seed is random unless given, and printed, so a good image can be made again.
 - **song** takes a song alias and a description of the style: genre, instruments, voice, mood. `--lyrics` reads the

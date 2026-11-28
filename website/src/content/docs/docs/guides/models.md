@@ -233,7 +233,7 @@ models with the same files:
 | `VISION` | `qwen3-vl-4b`, `paddleocr-vl`, `medgemma-4b`, `ocria-1` |
 | `SPEECH` | `kokoro`, `zonos3-mini`, `voxcpm2` |
 | `TRANSCRIPTION` | `whisper-large-v3-turbo`, `whisper-base.en` |
-| `IMAGE` | `flux2-klein`, `qwen-image`, `qwen-image-edit`, `z-image-turbo` |
+| `IMAGE` | `flux2-klein`, `qwen-image`, `qwen-image-edit`, `z-image-turbo`, `ernie-image-turbo` |
 | `SONG` | `ace-step-turbo`, `ace-step` (turbo with the 4B lyric LM), `ace-step-xl-turbo`, `ace-step-xl`, `yue2` |
 | `VIDEO` | `ltx-2.5-distilled`, `ltx-2.5-dev` (gated) |
 

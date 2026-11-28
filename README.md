@@ -324,7 +324,7 @@ fornax list                 # every alias, what is downloaded, and other GGUF mo
 
 The aliases are Fornax's model catalogue (`ModelCatalog`): `qwen3-0.6b`, `qwen3-4b`, `qwen3-vl-4b`, `paddleocr-vl`,
 `medgemma-4b`, `ocria-1`, `kokoro`, `zonos3-mini`, `voxcpm2`, `whisper-large-v3-turbo`, `whisper-base.en`, `flux2-klein`,
-`qwen-image`, `qwen-image-edit`, `z-image-turbo`,
+`qwen-image`, `qwen-image-edit`, `z-image-turbo`, `ernie-image-turbo`,
 `ace-step-turbo`, `ace-step`, `ace-step-xl-turbo`, `ace-step-xl`, `yue2`, `ltx-2.5-distilled` and `ltx-2.5-dev`.
 `fornax pull` also takes a repo (`fornax pull unsloth/Qwen3-4B-Instruct-2507-GGUF:Q4_K_M`, or file names and globs).
 

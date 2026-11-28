@@ -189,7 +189,7 @@ class ModelsTest {
         var hub = hub();
         var ps = new PrintStream(new ByteArrayOutputStream(), true, StandardCharsets.UTF_8);
         var chat = assertThrows(Main.Failure.class, () -> Models.fetch("qwen3-4b", Kind.IMAGE, "image", false, hub, ps, false));
-        assertEquals("qwen3-4b is a chat model; image takes an image model: flux2-klein, qwen-image, qwen-image-edit, z-image-turbo", chat.getMessage());
+        assertEquals("qwen3-4b is a chat model; image takes an image model: flux2-klein, qwen-image, qwen-image-edit, z-image-turbo, ernie-image-turbo", chat.getMessage());
         var song = assertThrows(Main.Failure.class, () -> Models.fetch("flux2-klein", Kind.SONG, "song", false, hub, ps, false));
         assertTrue(song.getMessage().startsWith("flux2-klein is an image model; song takes a song model: ace-step-turbo"), song.getMessage());
         var stt = assertThrows(Main.Failure.class, () -> Models.fetch("kokoro", Kind.TRANSCRIPTION, "transcribe", true, hub, ps, false));

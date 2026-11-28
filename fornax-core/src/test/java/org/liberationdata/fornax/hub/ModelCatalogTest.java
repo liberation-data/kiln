@@ -58,6 +58,12 @@ class ModelCatalogTest {
         assertEquals(8, ModelCatalog.imageSteps(ModelCatalog.require("image:z-image-turbo")));
         assertEquals(1.0, ModelCatalog.imageCfg(ModelCatalog.require("z-image-turbo")));
         assertEquals(List.of("diffusion_model", "vae", "llm"), roles("z-image-turbo"));
+        assertEquals(8, ModelCatalog.imageSteps(ModelCatalog.require("image:ernie-image-turbo")));
+        assertEquals(1.0, ModelCatalog.imageCfg(ModelCatalog.require("ernie-image-turbo")));
+        assertEquals(List.of("diffusion_model", "vae", "llm"), roles("ernie-image-turbo"));
+        // the FLUX.2 VAE is klein's own file, so pulling one brings it for the other
+        assertEquals(ModelCatalog.require("flux2-klein").part("vae").orElseThrow().primary(),
+                ModelCatalog.require("ernie-image-turbo").part("vae").orElseThrow().primary());
     }
 
     @Test void licensesThatLimitUseAreSaid() {

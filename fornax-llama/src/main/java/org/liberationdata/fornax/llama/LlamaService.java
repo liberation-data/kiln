@@ -1,5 +1,6 @@
 package org.liberationdata.fornax.llama;
 
+import org.liberationdata.fornax.Audio;
 import org.liberationdata.fornax.Call;
 import org.liberationdata.fornax.Scored;
 import org.liberationdata.fornax.Wire;
@@ -13,6 +14,7 @@ import org.liberationdata.fornax.llama.LlamaModel.Options;
 import org.liberationdata.fornax.llama.LlamaModel.Result;
 
 import java.nio.ByteBuffer;
+import java.nio.FloatBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
@@ -45,7 +47,8 @@ public final class LlamaService implements WorkerService {
         Wire.In in = new Wire.In(args == null ? new byte[0] : args);
         return switch (method) {
             case "info" -> new Wire.Out().bool(model.supportsVision())
-                    .integer(model.mode() == Mode.EMBED ? model.embeddingSize() : 0).toBytes();
+                    .integer(model.mode() == Mode.EMBED ? model.embeddingSize() : 0)
+                    .bool(model.supportsAudio()).integer(model.audioSampleRate()).toBytes();
             case "chat" -> {
                 List<Message> messages = messages(in);
                 Options o = options(in);
@@ -54,7 +57,8 @@ public final class LlamaService implements WorkerService {
             case "chatJson" -> {
                 String request = in.string();
                 List<Image> images = images(in);
-                yield utf8(model.chatJsonOn(call, request, images, in.bool() ? pieces(events) : null));
+                List<Audio> audio = audio(in);
+                yield utf8(model.chatJsonOn(call, request, images, audio, in.bool() ? pieces(events) : null));
             }
             case "complete" -> {
                 String prompt = in.string();
@@ -87,6 +91,7 @@ public final class LlamaService implements WorkerService {
                 .integer(slots).toBytes();
     }
 
+    /** A message's audio isn't sent: a chat with audio goes to the worker as chatJson (LlamaModel.chatOn). */
     static byte[] chatArgs(List<Message> messages, Options o, boolean stream) {
         Wire.Out out = new Wire.Out().integer(messages.size());
         for (Message m : messages) {
@@ -96,9 +101,10 @@ public final class LlamaService implements WorkerService {
         return options(out, o).bool(stream).toBytes();
     }
 
-    static byte[] chatJsonArgs(String request, List<Image> images, boolean stream) {
+    /** audio goes as mono: the parent has already mixed it down and resampled it to the model's rate. */
+    static byte[] chatJsonArgs(String request, List<Image> images, List<Audio> audio, boolean stream) {
         Wire.Out out = new Wire.Out().string(request);
-        return images(out, images).bool(stream).toBytes();
+        return audio(images(out, images), audio).bool(stream).toBytes();
     }
 
     static byte[] completeArgs(String prompt, List<Image> images, Options o, boolean stream) {
@@ -163,6 +169,31 @@ public final class LlamaService implements WorkerService {
         out.integer(images.size());
         for (Image img : images) out.integer(img.width()).integer(img.height()).bytes(img.rgb());
         return out;
+    }
+
+    /** Each as its sample rate and its mono samples, one block of floats (a long clip goes through shared memory). */
+    private static Wire.Out audio(Wire.Out out, List<Audio> audio) {
+        out.integer(audio.size());
+        for (Audio a : audio) {
+            float[] mono = a.mono();
+            ByteBuffer b = ByteBuffer.allocate(Math.multiplyExact(mono.length, Float.BYTES));
+            b.asFloatBuffer().put(mono);
+            out.integer(a.sampleRate()).bytes(b.array());
+        }
+        return out;
+    }
+
+    static List<Audio> audio(Wire.In in) {
+        int n = in.integer();
+        List<Audio> audio = new ArrayList<>(n);
+        for (int i = 0; i < n; i++) {
+            int rate = in.integer();
+            FloatBuffer f = ByteBuffer.wrap(in.bytes()).asFloatBuffer();
+            float[] mono = new float[f.remaining()];
+            f.get(mono);
+            audio.add(Audio.ofMono(mono, rate));
+        }
+        return audio;
     }
 
     private static Wire.Out strings(Wire.Out out, List<String> strings) {

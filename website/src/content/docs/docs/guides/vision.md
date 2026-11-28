@@ -37,7 +37,9 @@ try (var vlm = new LlamaModel(LlamaModel.Weights.QWEN3_VL_4B)) {        // the G
 a 1000×1300 invoice is about 1,200 Qwen3-VL tokens. With images, `chat` formats the conversation with the model's own
 (Jinja) chat template, as `chatJson` does, and `Result.promptTokens()` includes the image's tokens.
 
-`supportsVision()` tells you whether a loaded model takes images.
+`supportsVision()` tells you whether a loaded model takes images. An mmproj can hold an audio encoder instead, or as
+well: `supportsAudio()` says so, and `Message.user(text, audio...)` sends `Audio` the same way
+([Speech to text](/docs/guides/speech-to-text/#qwen3-asr-through-llamacpp)).
 
 ### Images
 
@@ -67,6 +69,7 @@ which `downloadCommand()` also gives you.
 | `OCRIA_1` | OCRia-1 4B: a document page to markdown, tables as HTML; [run it with thinking off](#ocria-1) | OCRia-1 license, not open source: [read it first](#ocria-1) |
 | `QWEN3_4B` | Qwen3 4B Instruct: text only | Apache-2.0 |
 | `QWEN3_EMBEDDING_0_6B`, `EMBEDDINGGEMMA_2`, `QWEN3_RERANKER_0_6B`, `QWEN3_RERANKER_4B` | embeddings and reranking, loaded with `Mode.EMBED` or `Mode.RERANK`; see [Embeddings and reranking](/docs/guides/embeddings/) | Apache-2.0 |
+| `QWEN3_ASR_0_6B`, `QWEN3_ASR_1_7B` | speech recognition: their mmproj is an audio encoder, so they take `Audio`, not images; see [Speech to text](/docs/guides/speech-to-text/#qwen3-asr-through-llamacpp) | Apache-2.0 |
 
 Any other vision GGUF llama.cpp runs works too:
 

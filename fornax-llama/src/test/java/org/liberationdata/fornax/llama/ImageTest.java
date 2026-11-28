@@ -55,7 +55,7 @@ class ImageTest {
         assertEquals(List.of(), new Message("user", "hi", null).images());
         assertEquals(List.of(), Message.user("hi").images());
         Image a = Image.of(twoPixels());
-        String json = ChatRequests.messages(List.of(new Message("user", null, List.of(a))), new ArrayList<>());
+        String json = ChatRequests.messages(List.of(new Message("user", null, List.of(a))), new ArrayList<>(), new ArrayList<>());
         assertEquals(Json.parse("""
             [{"role": "user", "content": [{"type": "image", "index": 0}, {"type": "text", "text": ""}]}]"""), Json.parse(json));
     }
@@ -65,7 +65,7 @@ class ImageTest {
         Image a = Image.of(twoPixels()), b = Image.of(twoPixels());
         List<Image> images = new ArrayList<>();
         String json = ChatRequests.messages(List.of(Message.system("Be brief."), Message.user("Compare \"these\".", a, b),
-                Message.assistant("ok"), Message.user("And this?", a)), images);
+                Message.assistant("ok"), Message.user("And this?", a)), images, new ArrayList<>());
         assertEquals(List.of(a, b, a), images);
         assertEquals(Json.parse("""
             [{"role": "system", "content": "Be brief."},
@@ -80,7 +80,7 @@ class ImageTest {
     void extractRequestCarriesTheSchemaAndGreedySampling() {
         String schema = "{\"type\": \"object\", \"properties\": {\"total\": {\"type\": \"number\"}}}";
         Object req = Json.parse(ChatRequests.extract(List.of(Message.user("Total?")), schema,
-                Options.DEFAULT.withTemperature(-1).withMaxTokens(100).withSeed(7), new ArrayList<>()));
+                Options.DEFAULT.withTemperature(-1).withMaxTokens(100).withSeed(7), new ArrayList<>(), new ArrayList<>()));
         assertEquals(Json.parse(schema), Json.get(req, "json_schema"));
         assertEquals(0.0, Json.get(req, "temperature"));
         assertEquals(100L, Json.get(req, "max_tokens"));
@@ -94,16 +94,16 @@ class ImageTest {
         assertTrue(new Options(10, 0, 0.9f, 0.05f, 1).thinking());   // the five-value constructor, as before the switch
         Options off = Options.DEFAULT.withThinking(false).withSeed(3).withMaxTokens(9).withTemperature(0);
         assertFalse(off.thinking());   // the other withers keep it
-        assertNull(Json.get(Json.parse(ChatRequests.chat(List.of(Message.user("Hi")), Options.DEFAULT, new ArrayList<>())),
+        assertNull(Json.get(Json.parse(ChatRequests.chat(List.of(Message.user("Hi")), Options.DEFAULT, new ArrayList<>(), new ArrayList<>())),
                 "enable_thinking"));
-        Object req = Json.parse(ChatRequests.chat(List.of(Message.system("Be brief."), Message.user("Hi")), off, new ArrayList<>()));
+        Object req = Json.parse(ChatRequests.chat(List.of(Message.system("Be brief."), Message.user("Hi")), off, new ArrayList<>(), new ArrayList<>()));
         assertEquals(false, Json.get(req, "enable_thinking"));
         assertEquals(9L, Json.get(req, "max_tokens"));
         assertEquals(3L, Json.get(req, "seed"));
         assertEquals(0L, Json.get(req, "top_k"));
         assertEquals("Be brief.", Json.get(req, "messages", 0, "content"));
         Object extract = Json.parse(ChatRequests.extract(List.of(Message.user("Total?")), "{\"type\": \"object\"}", off,
-                new ArrayList<>()));
+                new ArrayList<>(), new ArrayList<>()));
         assertEquals(false, Json.get(extract, "enable_thinking"));
     }
 

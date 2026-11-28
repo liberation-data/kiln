@@ -52,18 +52,19 @@ Package `org.liberationdata.fornax.llama`. See [Language models](/docs/guides/la
 | `complete(prompt, options, onPiece)` | raw completion of a prompt you've formatted |
 | `cancel()` | stops the call in progress (every one, with slots), from any thread |
 | `chatAsync(messages, options[, subscriber])`, `chatStream(messages, options)` | `chat` on the model's own thread: a `CompletableFuture<Result>`, optionally streaming to a `Flow.Subscriber`; or a cold `Flow.Publisher<String>` |
-| `chatJsonAsync(requestJson[, images[, subscriber]])`, `extractAsync(...)`, `completeAsync(prompt, images, options)` | the same for `chatJson`, `extract` and `complete` |
+| `chatJsonAsync(requestJson[, images[, audio][, subscriber]])`, `extractAsync(...)`, `completeAsync(prompt, images, options)` | the same for `chatJson`, `extract` and `complete` |
 | `streamOn(executor, bufferSize)` | where streamed pieces are delivered and how far a subscriber may fall behind (default: virtual threads, 1024) |
 | `new LlamaModel(Weights)`, `(gguf, mmproj)` | a vision language model with its mmproj; see [Vision](/docs/guides/vision/). `supportsVision()` |
 | `extract(messages, jsonSchema, options)` | a reply constrained to a JSON schema, as JSON text; messages may carry images |
 | `chatJson(requestJson, images, onContent)`, `complete(prompt, images, options, onPiece)` | `chatJson` and `complete` with images; `mediaMarker()` |
+| `chatJson(requestJson, images, audio, onContent)` | `chatJson` with audio too (`{"type": "audio", "index": i}` or `input_audio` parts), for a model whose mmproj has an audio encoder; `supportsAudio()`, `audioSampleRate()`. See [Speech to text](/docs/guides/speech-to-text/#qwen3-asr-through-llamacpp) |
 | `new LlamaModel(Weights, Mode)`, `(gguf, Mode)`, `(Weights or gguf, gpuLayers, contextSize, Mode)` | a model loaded for `Mode.CHAT`, `EMBED` or `RERANK`; `mode()`. See [Embeddings and reranking](/docs/guides/embeddings/) |
 | `embed(texts[, embedOptions])`, `embed(text)`, `embedAsync(texts, embedOptions)` | embeddings (`float[][]`, L2-normalised by default); `embeddingSize()`. `embeddings(texts, embedOptions)`: the vectors with the tokens they took (`Embeddings`) |
 | `rerank(query, documents)`, `rerankAsync(query, documents)` | the documents' relevance scores, best first, as `List<Scored>` |
 | `LlamaModel.EmbedOptions` | `prefix`, `normalize`; `DEFAULT`, `query(task)` (Qwen3-Embedding's instruction format), `gemmaQuery(task)` and `gemmaDocument()` (EmbeddingGemma's prefixes), `withPrefix`, `withNormalize` |
-| `LlamaModel.Message` | `role`, `content` and `images`; `system(...)`, `user(...)`, `user(text, images...)`, `assistant(...)` |
+| `LlamaModel.Message` | `role`, `content`, `images` and `audio`; `system(...)`, `user(...)`, `user(text, images...)`, `user(text, audio...)`, `assistant(...)` |
 | `LlamaModel.Image` | packed RGB: `of(BufferedImage)`, `read(Path)`, `decode(bytes)` |
-| `LlamaModel.Weights` | the models Fornax knows by name: `QWEN3_4B`, `QWEN3_VL_4B`, `PADDLEOCR_VL`, `MEDGEMMA_4B`, `OCRIA_1`, `QWEN3_EMBEDDING_0_6B`, `EMBEDDINGGEMMA_2`, `QWEN3_RERANKER_0_6B`, `QWEN3_RERANKER_4B`; `named(...)`, `vision()`, `model()`, `mmproj()`, `downloaded()`, `downloadCommand()` |
+| `LlamaModel.Weights` | the models Fornax knows by name: `QWEN3_4B`, `QWEN3_VL_4B`, `PADDLEOCR_VL`, `MEDGEMMA_4B`, `OCRIA_1`, `QWEN3_EMBEDDING_0_6B`, `EMBEDDINGGEMMA_2`, `QWEN3_RERANKER_0_6B`, `QWEN3_RERANKER_4B`, `QWEN3_ASR_0_6B`, `QWEN3_ASR_1_7B`; `named(...)`, `vision()`, `audio()`, `model()`, `mmproj()`, `downloaded()`, `downloadCommand()` |
 | `Json` | just enough JSON to read `chatJson` replies: `parse`, `get(doc, path...)`, `quote` |
 | `LlamaModel.Options` | `maxTokens`, `temperature`, `topP`, `minP`, `seed`, `thinking`; `DEFAULT`, `withSeed`, `withMaxTokens`, `withTemperature`, `withThinking` |
 | `LlamaModel.Result` | `text`, `promptTokens`, `generatedTokens` |

@@ -255,7 +255,8 @@ to that schema.
 Loaded with an mmproj GGUF, a `LlamaModel` is a vision language model, through llama.cpp's `mtmd` (as `llama-mtmd-cli`
 and `llama-server --mmproj` run them): `Message.user(text, images...)` with `Image.of(BufferedImage)`,
 `Image.read(Path)` or `Image.decode(bytes)`; `chat`, `chatJson` and `extract` (a reply constrained to a JSON schema)
-all take images. `LlamaModel.Weights` names the models Fornax has been tried with.
+all take images. An mmproj with an audio encoder takes `Audio` the same way (`Message.user(text, audio...)`), which
+runs speech recognition models such as Qwen3-ASR. `LlamaModel.Weights` names the models Fornax has been tried with.
 
 Loaded in `Mode.EMBED` or `Mode.RERANK`, a `LlamaModel` is an embedding model or a reranker, through llama.cpp's
 pooled embeddings output (as `llama-embedding` and `llama-server --embedding` / `--reranking` run them), for search

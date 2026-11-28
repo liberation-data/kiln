@@ -45,7 +45,8 @@ int fornax_llama_chat_json(fornax_llama * h, const char * request_json, fornax_l
 //
 // Images go in as packed RGB, 3 bytes a pixel, row by row: rgb[i] holds widths[i] * heights[i] * 3 bytes.
 
-// A vision language model: the language model's GGUF plus its mmproj GGUF (the vision encoder and projector).
+// A vision (or audio) language model: the language model's GGUF plus its mmproj GGUF (the vision or audio encoder,
+// or both, and the projector).
 // A handle from fornax_llama_create_mm also does everything a fornax_llama_create handle does.
 fornax_llama * fornax_llama_create_mm(const char * model_path, const char * mmproj_path, int n_gpu_layers, int n_ctx);
 
@@ -75,6 +76,27 @@ int fornax_llama_complete_images(fornax_llama * h, const char * prompt, const un
 int fornax_llama_chat_json_images(fornax_llama * h, const char * request_json, const unsigned char ** rgb,
                                 const uint32_t * widths, const uint32_t * heights, int n_images,
                                 fornax_llama_token_cb cb, void * user, char ** out_response_json);
+
+// --- Audio (speech recognition and audio language models, through llama.cpp's mtmd) ---
+//
+// Audio goes in as mono float PCM in [-1, 1] at the model's own sample rate (fornax_llama_audio_sample_rate): pcm[i]
+// holds n_samples[i] floats. mtmd doesn't resample raw PCM, so audio at another rate must be resampled first.
+
+// 1 if the handle takes audio (it was created with an mmproj that has an audio encoder), else 0.
+int fornax_llama_supports_audio(fornax_llama * h);
+
+// The sample rate the audio encoder takes, in Hz (16000 for Whisper-style encoders), or -1 when the handle takes no
+// audio.
+int fornax_llama_audio_sample_rate(fornax_llama * h);
+
+// fornax_llama_chat_json_images with audio too. In a message's content array, {"type": "audio", "index": i} stands for
+// the i-th PCM buffer given here, and an OpenAI {"type": "input_audio", "input_audio": {"data": "<base64>",
+// "format": "wav"}} part is decoded (WAV, MP3, FLAC, told apart by their bytes) and resampled to the model's rate.
+// Image parts work as in fornax_llama_chat_json_images. A model whose mmproj has no audio encoder refuses audio parts.
+int fornax_llama_chat_json_media(fornax_llama * h, const char * request_json, const unsigned char ** rgb,
+                               const uint32_t * widths, const uint32_t * heights, int n_images, const float ** pcm,
+                               const uint32_t * n_samples, int n_audio, fornax_llama_token_cb cb, void * user,
+                               char ** out_response_json);
 
 // --- Embeddings and reranking (pooled output, as llama-embedding and llama-server's /embedding and /rerank) ---
 //

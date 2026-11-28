@@ -136,7 +136,7 @@ std::string base64_decode(const std::string & in) {
         if (c == '=') break;
         if (isspace(c)) continue;
         size_t d = chars.find(c == '-' ? '+' : c == '_' ? '/' : (char) c);
-        if (d == std::string::npos) throw std::invalid_argument("invalid base64 in image_url");
+        if (d == std::string::npos) throw std::invalid_argument("invalid base64 in a media part");
         val = ((val << 6) | (int) d) & 0xFFFFFF;
         bits += 6;
         if (bits >= 0) { out.push_back((char) ((val >> bits) & 0xFF)); bits -= 8; }
@@ -144,7 +144,7 @@ std::string base64_decode(const std::string & in) {
     return out;
 }
 
-// The marker for images inside a chat: no user text will contain it, so only Fornax's own image parts become images.
+// The marker for media inside a chat: no user text will contain it, so only Fornax's own media parts become media.
 const std::string & private_marker() {
     static const std::string m = [] {
         std::random_device rd;
@@ -155,53 +155,92 @@ const std::string & private_marker() {
     return m;
 }
 
-// Images found in a request. `owned` keeps the ones decoded here alive; `all` is every image, in prompt order.
-struct request_images {
+// Mono float PCM buffers, at the model's sample rate, as mtmd audio bitmaps, in order.
+std::vector<mtmd::bitmap_ptr> pcm_bitmaps(const float ** pcm, const uint32_t * n_samples, int n) {
+    std::vector<mtmd::bitmap_ptr> out;
+    for (int i = 0; i < n; i++) {
+        if (!pcm[i] || n_samples[i] == 0) throw std::invalid_argument("audio " + std::to_string(i) + " is empty");
+        out.emplace_back(mtmd_bitmap_init_from_audio(n_samples[i], pcm[i]));
+    }
+    return out;
+}
+
+// Images and audio found in a request. `owned` keeps the ones decoded here alive; `all` is every one, in prompt order.
+struct request_media {
     std::vector<mtmd::bitmap_ptr> owned;
     std::vector<mtmd_bitmap *> all;
 };
 
-// Replaces the image parts of the request's messages with media markers, collecting the images in order:
-// {"type": "image", "index": i} is given[i]; {"type": "image_url", ...} is a base64 data: URI (PNG, JPEG, ...).
-void take_images(fornax_llama * h, common_json & messages, const std::vector<mtmd_bitmap *> & given, request_images & out) {
+// A media file decoded by mtmd (images: PNG, JPEG, ...; audio: WAV, MP3, FLAC), refused if it isn't the kind the
+// part said it was: an image_url that holds audio would otherwise reach the model as audio, and the reverse.
+mtmd_bitmap * decode_media(fornax_llama * h, const std::string & bytes, bool audio, const char * part) {
+    auto w = mtmd_helper_bitmap_init_from_buf(h->mctx, (const unsigned char *) bytes.data(), bytes.size(), false,
+                                              mtmd_helper_init_opt_default());
+    if (w.video_ctx) {  // a video's bitmap reads its frames from video_ctx as it's tokenized: freed together, unused
+        if (w.bitmap) mtmd_bitmap_free(w.bitmap);
+        mtmd_helper_video_free(w.video_ctx);
+        throw std::invalid_argument(std::string("an ") + part + " part holds a video, which isn't supported");
+    }
+    if (!w.bitmap)
+        throw std::invalid_argument(std::string("could not decode an ") + part + (audio ? " audio file" : " image"));
+    if (mtmd_bitmap_is_audio(w.bitmap) != audio) {
+        mtmd_bitmap_free(w.bitmap);
+        throw std::invalid_argument(std::string("an ") + part + " part holds " + (audio ? "an image" : "audio"));
+    }
+    return w.bitmap;
+}
+
+// Replaces the image and audio parts of the request's messages with media markers, collecting the media in order:
+// {"type": "image", "index": i} is images[i]; {"type": "image_url", ...} is a base64 data: URI (PNG, JPEG, ...);
+// {"type": "audio", "index": i} is audio[i]; {"type": "input_audio", "input_audio": {"data": base64, "format": ...}}
+// is an encoded audio file (WAV, MP3, FLAC: mtmd tells them apart by their bytes, so format isn't needed).
+void take_media(fornax_llama * h, common_json & messages, const std::vector<mtmd_bitmap *> & images,
+                const std::vector<mtmd_bitmap *> & audio, request_media & out) {
     if (!messages.is_array()) return;
     for (auto & m : messages) {
         if (!m.is_object() || !m.contains("content") || !m.at("content").is_array()) continue;
         for (auto & p : m.at("content")) {
             std::string type = p.is_object() ? p.value("type", "") : "";
-            if (type != "image" && type != "image_url") continue;
-            if (!h->mctx || !mtmd_support_vision(h->mctx))
-                throw std::invalid_argument("this model takes no images (load it with its mmproj)");
-            if (type == "image") {
+            const bool is_image = type == "image" || type == "image_url";
+            const bool is_audio = type == "audio" || type == "input_audio";
+            if (!is_image && !is_audio) continue;
+            if (is_image && (!h->mctx || !mtmd_support_vision(h->mctx)))
+                throw std::invalid_argument(h->mctx ? "this model takes no images (its mmproj has no vision encoder)"
+                                                    : "this model takes no images (load it with its mmproj)");
+            if (is_audio && (!h->mctx || !mtmd_support_audio(h->mctx)))
+                throw std::invalid_argument(h->mctx ? "this model takes no audio (its mmproj has no audio encoder)"
+                                                    : "this model takes no audio (load it with its mmproj)");
+            if (type == "image" || type == "audio") {
+                const auto & given = type == "image" ? images : audio;
                 int i = p.at("index").get<int>();
                 if (i < 0 || i >= (int) given.size())
-                    throw std::invalid_argument("image index " + std::to_string(i) + " out of range (" +
+                    throw std::invalid_argument(type + " index " + std::to_string(i) + " out of range (" +
                                                 std::to_string(given.size()) + " given)");
                 out.all.push_back(given[i]);
-            } else {
+            } else if (type == "image_url") {
                 std::string url = p.at("image_url").at("url").get<std::string>();
                 size_t comma = url.find(',');
                 if (url.rfind("data:", 0) != 0 || comma == std::string::npos || comma < 6 ||
                     url.compare(comma - 6, 6, "base64") != 0)
                     throw std::invalid_argument("image_url must be a base64 data: URI");
-                std::string bytes = base64_decode(url.substr(comma + 1));
-                auto w = mtmd_helper_bitmap_init_from_buf(h->mctx, (const unsigned char *) bytes.data(), bytes.size(),
-                                                          false, mtmd_helper_init_opt_default());
-                if (!w.bitmap) throw std::invalid_argument("could not decode an image_url image");
-                out.owned.emplace_back(w.bitmap);
-                out.all.push_back(w.bitmap);
+                out.owned.emplace_back(decode_media(h, base64_decode(url.substr(comma + 1)), false, "image_url"));
+                out.all.push_back(out.owned.back().get());
+            } else {
+                std::string data = p.at("input_audio").at("data").get<std::string>();
+                out.owned.emplace_back(decode_media(h, base64_decode(data), true, "input_audio"));
+                out.all.push_back(out.owned.back().get());
             }
             p = common_json{{"type", "media_marker"}, {"text", private_marker()}};
         }
     }
 }
 
-// A rendered chat prompt with image markers, tokenized with the images in their places. Template text may carry
-// special tokens; user-supplied text must not be parsed for them.
+// A rendered chat prompt with media markers, tokenized with the images and audio in their places. Template text may
+// carry special tokens; user-supplied text must not be parsed for them.
 int tokenize_chat(fornax_llama * h, const common_chat_prompt & prompt, const std::vector<mtmd_bitmap *> & bmps,
                   mtmd::input_chunks_ptr & chunks) {
     const std::string & marker = private_marker();
-    struct seg { std::string text; bool special; int image; };  // image: the one that follows the text, or -1
+    struct seg { std::string text; bool special; int media; };  // media: the one that follows the text, or -1
     std::vector<seg> segs;
     int next = 0;
     for (const auto & part : prompt.parts) {
@@ -213,24 +252,24 @@ int tokenize_chat(fornax_llama * h, const common_chat_prompt & prompt, const std
         segs.push_back({part.text.substr(start), !part.is_input, -1});
     }
     if (next != (int) bmps.size())
-        return fail("the chat template placed " + std::to_string(next) + " of " + std::to_string(bmps.size()) + " images", 9);
+        return fail("the chat template placed " + std::to_string(next) + " of " + std::to_string(bmps.size()) + " media", 9);
     std::vector<mtmd_input_text> texts(segs.size());
     std::vector<mtmd_input_part> parts;
     for (size_t i = 0; i < segs.size(); i++) {
         texts[i] = {segs[i].text.data(), segs[i].text.size(), false, segs[i].special};
         if (!segs[i].text.empty()) parts.push_back({&texts[i], nullptr});
-        if (segs[i].image >= 0) parts.push_back({nullptr, bmps[segs[i].image]});
+        if (segs[i].media >= 0) parts.push_back({nullptr, bmps[segs[i].media]});
     }
     std::vector<const mtmd_input_part *> ptrs;
     for (const auto & p : parts) ptrs.push_back(&p);
     chunks.reset(mtmd_input_chunks_init());
     if (int r = mtmd_tokenize_from_parts(h->mctx, chunks.get(), ptrs.data(), ptrs.size(), true); r != 0)
-        return fail("tokenizing the prompt with images failed: " + std::to_string(r), 10);
+        return fail("tokenizing the prompt with media failed: " + std::to_string(r), 10);
     return 0;
 }
 
-// Runs a prompt with images through the model from position 0 (images through the vision encoder, then everything
-// through the language model), leaving the logits of its last token. *out_pos is the position after it, and
+// Runs a prompt with media through the model from position 0 (images and audio through their encoders, then
+// everything through the language model), leaving the logits of its last token. *out_pos is the position after it, and
 // *out_n_prompt the number of tokens (context cells) it took.
 int eval_chunks(fornax_llama * h, const mtmd_input_chunks * chunks, int * out_pos, int * out_n_prompt) {
     const int n_ctx = (int) llama_n_ctx(h->ctx);
@@ -239,7 +278,7 @@ int eval_chunks(fornax_llama * h, const mtmd_input_chunks * chunks, int * out_po
     llama_memory_clear(llama_get_memory(h->ctx), true);
     llama_pos new_pos = 0;
     if (int r = mtmd_helper_eval_chunks(h->mctx, h->ctx, chunks, 0, 0, (int) llama_n_batch(h->ctx), true, &new_pos); r != 0)
-        return fail("evaluating the prompt and images failed: " + std::to_string(r), 8);
+        return fail("evaluating the prompt and media failed: " + std::to_string(r), 8);
     *out_pos = (int) new_pos;
     *out_n_prompt = n;
     return 0;
@@ -349,17 +388,18 @@ std::string chat_response(common_chat_session & session, std::string finish, int
     return res.dump();
 }
 
-// fornax_llama_chat_json, with the images that {"type": "image", "index": i} parts refer to.
-int chat_json_impl(fornax_llama * h, const char * request_json, const std::vector<mtmd_bitmap *> & given,
-                   fornax_llama_token_cb cb, void * user, char ** out_response_json) {
+// fornax_llama_chat_json, with the images and audio that {"type": "image" | "audio", "index": i} parts refer to.
+int chat_json_impl(fornax_llama * h, const char * request_json, const std::vector<mtmd_bitmap *> & images,
+                   const std::vector<mtmd_bitmap *> & audio, fornax_llama_token_cb cb, void * user,
+                   char ** out_response_json) {
     *out_response_json = nullptr;
     if (int rc = require_generative(h); rc != 0) return rc;
     common_sampler * smpl = nullptr;
     try {
         common_json req = common_json::parse(request_json);
-        request_images images;
-        if (req.contains("messages")) take_images(h, req.at("messages"), given, images);
-        const bool with_images = !images.all.empty();
+        request_media media;
+        if (req.contains("messages")) take_media(h, req.at("messages"), images, audio, media);
+        const bool with_media = !media.all.empty();
 
         common_chat_session session(h->tmpls.get(), h->vocab, chat_inputs(req));
 
@@ -367,8 +407,8 @@ int chat_json_impl(fornax_llama * h, const char * request_json, const std::vecto
         mtmd::input_chunks_ptr chunks;
         int n_prompt = 0;
         const int n_ctx = (int) llama_n_ctx(h->ctx);
-        if (with_images) {
-            if (int rc = tokenize_chat(h, session.prompt(), images.all, chunks); rc != 0) return rc;
+        if (with_media) {
+            if (int rc = tokenize_chat(h, session.prompt(), media.all, chunks); rc != 0) return rc;
             n_prompt = (int) mtmd_helper_get_n_tokens(chunks.get());
         } else {
             prompt = chat_tokens(h->vocab, session);
@@ -385,8 +425,8 @@ int chat_json_impl(fornax_llama * h, const char * request_json, const std::vecto
         llama_memory_clear(llama_get_memory(h->ctx), true);
         std::string finish = "stop", raw, sent_content;
         int pos = 0, generated = 0, cells = 0;  // cells: of the context used (more than pos after an M-RoPE image)
-        std::vector<llama_token> cur = prompt;  // empty when the prompt went in with its images
-        if (with_images) {
+        std::vector<llama_token> cur = prompt;  // empty when the prompt went in with its media
+        if (with_media) {
             if (int rc = eval_chunks(h, chunks.get(), &pos, &cells); rc != 0) {
                 common_sampler_free(smpl);
                 return rc;
@@ -674,7 +714,7 @@ int fornax_llama_chat(fornax_llama * h, const char ** roles, const char ** conte
 
 int fornax_llama_chat_json(fornax_llama * h, const char * request_json, fornax_llama_token_cb cb, void * user,
                          char ** out_response_json) {
-    return chat_json_impl(h, request_json, {}, cb, user, out_response_json);
+    return chat_json_impl(h, request_json, {}, {}, cb, user, out_response_json);
 }
 
 fornax_llama * fornax_llama_create_mm(const char * model_path, const char * mmproj_path, int n_gpu_layers, int n_ctx) {
@@ -705,6 +745,10 @@ fornax_llama * fornax_llama_create_mm(const char * model_path, const char * mmpr
 
 int fornax_llama_supports_vision(fornax_llama * h) { return h->mctx && mtmd_support_vision(h->mctx) ? 1 : 0; }
 
+int fornax_llama_supports_audio(fornax_llama * h) { return h->mctx && mtmd_support_audio(h->mctx) ? 1 : 0; }
+
+int fornax_llama_audio_sample_rate(fornax_llama * h) { return h->mctx ? mtmd_get_audio_sample_rate(h->mctx) : -1; }
+
 const char * fornax_llama_media_marker(void) { return mtmd_default_marker(); }
 
 int fornax_llama_chat_images(fornax_llama * h, const char ** roles, const char ** contents, const int * image_counts,
@@ -731,7 +775,7 @@ int fornax_llama_chat_images(fornax_llama * h, const char ** roles, const char *
         common_json req = {{"messages", msgs}, {"max_tokens", max_tokens}, {"temperature", temperature > 0 ? temperature : 0.0f},
                            {"top_p", top_p}, {"min_p", min_p}, {"top_k", 0},
                            {"seed", seed == 0xFFFFFFFFu ? (int64_t) -1 : (int64_t) seed}};
-        rc = chat_json_impl(h, req.dump().c_str(), raw(bmps), cb, user, &res);
+        rc = chat_json_impl(h, req.dump().c_str(), raw(bmps), {}, cb, user, &res);
         if (rc != 0) return rc;
         std::string json(res);
         free(res);
@@ -752,7 +796,9 @@ int fornax_llama_complete_images(fornax_llama * h, const char * prompt, const un
                                int * out_n_prompt, int * out_n_generated) {
     *out_text = nullptr;
     if (int rc = require_generative(h); rc != 0) return rc;
-    if (!h->mctx || !mtmd_support_vision(h->mctx)) return fail("this model takes no images (load it with its mmproj)", 12);
+    if (!h->mctx || !mtmd_support_vision(h->mctx))
+        return fail(h->mctx ? "this model takes no images (its mmproj has no vision encoder)"
+                            : "this model takes no images (load it with its mmproj)", 12);
     std::vector<mtmd::bitmap_ptr> bmps;
     try { bmps = rgb_bitmaps(rgb, widths, heights, n_images); }
     catch (const std::exception & e) { return fail(e.what(), 11); }
@@ -788,7 +834,20 @@ int fornax_llama_chat_json_images(fornax_llama * h, const char * request_json, c
     std::vector<mtmd::bitmap_ptr> bmps;
     try { bmps = rgb_bitmaps(rgb, widths, heights, n_images); }
     catch (const std::exception & e) { return fail(e.what(), 11); }
-    return chat_json_impl(h, request_json, raw(bmps), cb, user, out_response_json);
+    return chat_json_impl(h, request_json, raw(bmps), {}, cb, user, out_response_json);
+}
+
+int fornax_llama_chat_json_media(fornax_llama * h, const char * request_json, const unsigned char ** rgb,
+                               const uint32_t * widths, const uint32_t * heights, int n_images, const float ** pcm,
+                               const uint32_t * n_samples, int n_audio, fornax_llama_token_cb cb, void * user,
+                               char ** out_response_json) {
+    *out_response_json = nullptr;
+    std::vector<mtmd::bitmap_ptr> imgs, sounds;
+    try {
+        imgs = rgb_bitmaps(rgb, widths, heights, n_images);
+        sounds = pcm_bitmaps(pcm, n_samples, n_audio);
+    } catch (const std::exception & e) { return fail(e.what(), 11); }
+    return chat_json_impl(h, request_json, raw(imgs), raw(sounds), cb, user, out_response_json);
 }
 
 fornax_llama * fornax_llama_create_pooled(const char * model_path, int n_gpu_layers, int n_ctx, int rerank) {

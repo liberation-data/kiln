@@ -7,8 +7,15 @@ import org.liberationdata.fornax.whisper.WhisperModel;
 
 import java.io.File;
 // --8<-- [end:transcribe]
+// --8<-- [start:qwen3asr]
+import org.liberationdata.fornax.llama.LlamaModel;
+import org.liberationdata.fornax.llama.LlamaModel.Message;
+
+import java.util.List;
+// --8<-- [end:qwen3asr]
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Base64;
 
 /** The snippets of website/src/content/docs/docs/guides/speech-to-text.md: compiled, never run. */
 class SpeechToText {
@@ -82,5 +89,28 @@ class SpeechToText {
         });
         // --8<-- [end:listener]
         return t;
+    }
+
+    void qwen3Asr() throws Exception {
+        // --8<-- [start:qwen3asr]
+        try (var asr = new LlamaModel(LlamaModel.Weights.QWEN3_ASR_0_6B)) {
+            var greedy = LlamaModel.Options.DEFAULT.withTemperature(0).withMaxTokens(1024);
+            Audio talk = Audio.readWav(new File("talk.wav"));     // any rate and channels: resampled to 16 kHz mono
+            String text = asr.chat(List.of(Message.user("Transcribe audio to text", talk)), greedy).text();
+            System.out.println(text);
+        }
+        // --8<-- [end:qwen3asr]
+    }
+
+    String qwen3AsrJson(LlamaModel asr) throws Exception {
+        // --8<-- [start:qwen3asrjson]
+        String mp3 = Base64.getEncoder().encodeToString(Files.readAllBytes(Path.of("talk.mp3")));
+        String reply = asr.chatJson("""
+            {"messages": [{"role": "user", "content": [
+                {"type": "input_audio", "input_audio": {"data": "%s", "format": "mp3"}},
+                {"type": "text", "text": "Transcribe audio to text"}]}],
+             "temperature": 0, "max_tokens": 1024}""".formatted(mp3), null);
+        // --8<-- [end:qwen3asrjson]
+        return reply;
     }
 }

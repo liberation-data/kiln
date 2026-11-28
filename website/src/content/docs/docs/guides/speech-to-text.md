@@ -1,6 +1,6 @@
 ---
 title: Speech to text
-description: Transcribe audio from Java with Whisper through whisper.cpp, with a start, end and probability for every word, and write word timings, SRT or WebVTT subtitles.
+description: Transcribe audio from Java with Whisper through whisper.cpp, with a start, end and probability for every word, and write word timings, SRT or WebVTT subtitles; or with Qwen3-ASR through llama.cpp.
 ---
 
 `fornax-whisper` turns speech into text through [whisper.cpp](https://github.com/ggml-org/whisper.cpp). Every word comes
@@ -220,6 +220,90 @@ next segment. `cancel()`, from another thread (or from the listener), stops a ca
 On the Radeon 8060S with Vulkan, large-v3-turbo transcribes 55 s of narration (107 words) in about 1.8 s with a beam
 of 5 (31× real time, 60 words a second), and in about 1.1 s greedy (52×, 100 words a second). The model loads in
 under half a second once it is in the page cache.
+
+## Qwen3-ASR through llama.cpp
+
+Whisper isn't the only way. Qwen3-ASR is a speech recognition model in the form llama.cpp's `mtmd` runs: a small Qwen3
+language model with an audio encoder in its mmproj. `LlamaModel` loads it like a vision model, and a user message
+carries `Audio` instead of an image. It gives text only: no word timings, segments or subtitles.
+
+```sh
+hf download ggml-org/Qwen3-ASR-0.6B-GGUF Qwen3-ASR-0.6B-Q8_0.gguf mmproj-Qwen3-ASR-0.6B-Q8_0.gguf
+```
+
+<!-- snippet: SpeechToText#qwen3asr -->
+```java
+import org.liberationdata.fornax.llama.LlamaModel;
+import org.liberationdata.fornax.llama.LlamaModel.Message;
+
+import java.util.List;
+
+try (var asr = new LlamaModel(LlamaModel.Weights.QWEN3_ASR_0_6B)) {
+    var greedy = LlamaModel.Options.DEFAULT.withTemperature(0).withMaxTokens(1024);
+    Audio talk = Audio.readWav(new File("talk.wav"));     // any rate and channels: resampled to 16 kHz mono
+    String text = asr.chat(List.of(Message.user("Transcribe audio to text", talk)), greedy).text();
+    System.out.println(text);
+}
+```
+
+Any `Audio` works: `LlamaModel` mixes it to mono and resamples it to the rate the encoder takes (`audioSampleRate()`,
+16 kHz). `supportsAudio()` says whether a loaded model takes audio; Qwen3-ASR's mmproj has no vision encoder, so it
+takes no images. The model writes the language it heard before the transcript (`language English<asr_text>...`). Its
+chat template marks that part as reasoning, so `chat` returns the transcript alone. Run it at temperature 0, and ask
+with "Transcribe audio to text", as llama-server's transcription endpoint does (the prompt made little difference
+here). Unlike Whisper, which works through 30 s windows, it takes the whole clip into its context, at 13 tokens a
+second of audio, and the transcript it writes shares that context, so a long recording needs a context to match
+(8192 tokens, the default, holds about eight minutes of speech with its transcript) and a `maxTokens` to match (1024
+is about five minutes of speech), or cutting into pieces first.
+
+`chatJson` takes audio as an `{"type": "audio", "index": i}` part with `chatJson(request, images, audio, onContent)`,
+or as an OpenAI `input_audio` part holding a WAV, MP3 or FLAC file, which llama.cpp decodes and resamples itself (as
+`llama-mtmd-cli --audio` reads a file). There `reasoning_content` holds the language:
+
+<!-- snippet: SpeechToText#qwen3asrjson -->
+```java
+String mp3 = Base64.getEncoder().encodeToString(Files.readAllBytes(Path.of("talk.mp3")));
+String reply = asr.chatJson("""
+    {"messages": [{"role": "user", "content": [
+        {"type": "input_audio", "input_audio": {"data": "%s", "format": "mp3"}},
+        {"type": "text", "text": "Transcribe audio to text"}]}],
+     "temperature": 0, "max_tokens": 1024}""".formatted(mp3), null);
+```
+
+`LlamaModel.Weights` has `QWEN3_ASR_0_6B` and `QWEN3_ASR_1_7B` (both Q8_0, Apache-2.0). A model with slots, and a
+model whose mmproj has no audio encoder, refuse audio.
+
+### Against Whisper
+
+The seven clips of narration in Fornax's explainer video (2.2 minutes, 336 words of synthesized American English) were
+transcribed with each model and scored against their scripts: word error rate in lower case, without punctuation. The
+scripts spell names as the voice says them ("Comfy U.I.", "Embaybel", "four J dot org"), and no model writes "Fornax"
+as it should, so about half of every model's errors are names. Times are per clip, warm, without loading; Radeon
+8060S (Strix Halo), Vulkan.
+
+| Model | WER | Time per clip | Speed |
+|---|---|---|---|
+| Whisper large-v3-turbo (q5_0), beam 5, word timings | 8.0% (27 words) | 1.25 s | 15× real time |
+| Whisper large-v3-turbo (q5_0), greedy, word timings | 8.0% (27 words) | 1.21 s | 16× real time |
+| Qwen3-ASR 0.6B (Q8_0) | 9.2% (31 words) | 0.59 s | 32× real time |
+| Qwen3-ASR 1.7B (Q8_0) | 8.9% (30 words) | 1.07 s | 18× real time |
+
+Whisper stays the default: it is as accurate here, and it times every word. Qwen3-ASR 0.6B is about twice as fast, but
+more of its errors are ordinary words ("a plain negative call", "stall the GPU"), where Whisper's are mostly names;
+Whisper, though, dropped the last sentence of the final clip. Whisper's times include its DTW word timing, which costs
+it about a third (see [How words are timed](#how-words-are-timed)). On the same files, Fornax's Qwen3-ASR transcripts
+are the same as `llama-mtmd-cli`'s at temperature 0. To rerun the comparison, from the repository root, with ffmpeg
+on the `PATH` and the models downloaded:
+
+```sh
+native/build.sh vulkan llama whisper
+./gradlew :fornax-core:jar :fornax-llama:jar :fornax-whisper:jar
+V=0.3.0-SNAPSHOT
+CP=fornax-core/build/libs/fornax-core-$V.jar:fornax-llama/build/libs/fornax-llama-$V.jar:fornax-whisper/build/libs/fornax-whisper-$V.jar
+J="java --enable-native-access=ALL-UNNAMED -Dfornax.library.path=build/native/linux-x86_64-vulkan -cp $CP scripts/AsrEval.java"
+$J whisper large-v3-turbo        # beam 5; add 1 for greedy
+$J llama qwen3-asr-0.6b          # or qwen3-asr-1.7b
+```
 
 ## Try it
 

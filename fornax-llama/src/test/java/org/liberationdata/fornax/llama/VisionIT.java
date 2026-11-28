@@ -3,6 +3,7 @@ package org.liberationdata.fornax.llama;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.liberationdata.fornax.Audio;
 import org.liberationdata.fornax.llama.LlamaModel.Image;
 import org.liberationdata.fornax.llama.LlamaModel.Message;
 import org.liberationdata.fornax.llama.LlamaModel.Options;
@@ -53,6 +54,20 @@ class VisionIT {
 
     @Test
     void supportsVision() { assertTrue(model.supportsVision()); }
+
+    /** Qwen3-VL's mmproj has a vision encoder and no audio one: audio is refused in Java and by the shim alike. */
+    @Test
+    void refusesAudio() {
+        assertFalse(model.supportsAudio());
+        assertEquals(-1, model.audioSampleRate());
+        var beep = Audio.ofMono(new float[1600], 16000);
+        var e = assertThrows(IllegalStateException.class, () -> model.chat(List.of(Message.user("Transcribe audio to text", beep)), GREEDY));
+        assertTrue(e.getMessage().contains("takes no audio: its mmproj has no audio encoder"), e.getMessage());
+        String req = """
+            {"messages": [{"role": "user", "content": [{"type": "input_audio", "input_audio": {"data": "UklGRg==", "format": "wav"}}]}]}""";
+        e = assertThrows(IllegalStateException.class, () -> model.chatJson(req, null));
+        assertTrue(e.getMessage().contains("takes no audio (its mmproj has no audio encoder)"), e.getMessage());
+    }
 
     @Test
     void chatNamesTheColourOfASquare() {
@@ -172,7 +187,7 @@ class VisionIT {
             assertTrue(r.promptTokens() > 1000, "the image should take most of the context: " + r.promptTokens());
             // the last token is sampled but never decoded, so it takes no cell
             assertEquals(1537, r.promptTokens() + r.generatedTokens(), r.promptTokens() + " + " + r.generatedTokens());
-            String json = small.chatJson("{\"messages\": " + ChatRequests.messages(List.of(ask), new ArrayList<>())
+            String json = small.chatJson("{\"messages\": " + ChatRequests.messages(List.of(ask), new ArrayList<>(), new ArrayList<>())
                     + ", \"temperature\": 0}", List.of(Image.of(page)), null);
             assertEquals("length", Json.get(Json.parse(json), "finish_reason"), json);
         }

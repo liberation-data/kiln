@@ -1,5 +1,6 @@
 package org.liberationdata.fornax.llama;
 
+import org.liberationdata.fornax.Audio;
 import org.liberationdata.fornax.Call;
 import org.liberationdata.fornax.HfCache;
 import org.liberationdata.fornax.Isolation;
@@ -49,7 +50,9 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
 /**
  * A GGUF language model running in-process through llama.cpp (via libfornax_llama).
  * Loaded with an mmproj GGUF as well, it is a vision language model: user messages can carry {@link Image}s (through
- * llama.cpp's mtmd, as llama-mtmd-cli and llama-server run them). See {@link Weights} for the models Fornax knows by name.
+ * llama.cpp's mtmd, as llama-mtmd-cli and llama-server run them). An mmproj with an audio encoder takes {@link Audio}
+ * instead (or as well): a speech recognition model such as Qwen3-ASR transcribes it ({@link #supportsAudio}). See
+ * {@link Weights} for the models Fornax knows by name.
  * Weights stay loaded until {@link #close()}.
  *
  * <p>The model's path can instead be a model by name, downloaded into the Hugging Face cache on first use and loaded
@@ -94,6 +97,12 @@ public final class LlamaModel implements AutoCloseable {
                 FunctionDescriptor.of(ADDRESS, ADDRESS, ADDRESS, JAVA_INT, JAVA_INT));
         static final MethodHandle SUPPORTS_VISION = LIB.function("fornax_llama_supports_vision",
                 FunctionDescriptor.of(JAVA_INT, ADDRESS));
+        static final MethodHandle SUPPORTS_AUDIO = LIB.function("fornax_llama_supports_audio",
+                FunctionDescriptor.of(JAVA_INT, ADDRESS));
+        static final MethodHandle AUDIO_SAMPLE_RATE = LIB.function("fornax_llama_audio_sample_rate",
+                FunctionDescriptor.of(JAVA_INT, ADDRESS));
+        static final MethodHandle CHAT_JSON_MEDIA = LIB.function("fornax_llama_chat_json_media", FunctionDescriptor.of(JAVA_INT,
+                ADDRESS, ADDRESS, ADDRESS, ADDRESS, ADDRESS, JAVA_INT, ADDRESS, ADDRESS, JAVA_INT, ADDRESS, ADDRESS, ADDRESS));
         static final MethodHandle MEDIA_MARKER = LIB.function("fornax_llama_media_marker", FunctionDescriptor.of(ADDRESS));
         static final MethodHandle CHAT_IMAGES = LIB.function("fornax_llama_chat_images", FunctionDescriptor.of(JAVA_INT,
                 ADDRESS, ADDRESS, ADDRESS, ADDRESS, JAVA_INT, ADDRESS, ADDRESS, ADDRESS, JAVA_INT,
@@ -101,8 +110,6 @@ public final class LlamaModel implements AutoCloseable {
         static final MethodHandle COMPLETE_IMAGES = LIB.function("fornax_llama_complete_images", FunctionDescriptor.of(JAVA_INT,
                 ADDRESS, ADDRESS, ADDRESS, ADDRESS, ADDRESS, JAVA_INT, JAVA_INT, JAVA_FLOAT, JAVA_FLOAT, JAVA_FLOAT, JAVA_INT,
                 ADDRESS, ADDRESS, ADDRESS, ADDRESS, ADDRESS));
-        static final MethodHandle CHAT_JSON_IMAGES = LIB.function("fornax_llama_chat_json_images", FunctionDescriptor.of(JAVA_INT,
-                ADDRESS, ADDRESS, ADDRESS, ADDRESS, ADDRESS, JAVA_INT, ADDRESS, ADDRESS, ADDRESS));
         static final MethodHandle CREATE_POOLED = LIB.function("fornax_llama_create_pooled",
                 FunctionDescriptor.of(ADDRESS, ADDRESS, JAVA_INT, JAVA_INT, JAVA_INT));
         static final MethodHandle N_EMBD = LIB.function("fornax_llama_n_embd", FunctionDescriptor.of(JAVA_INT, ADDRESS));
@@ -181,11 +188,18 @@ public final class LlamaModel implements AutoCloseable {
         return this;
     }
 
-    /** A chat message. A user message can carry images (for a model loaded with an mmproj); they go before its text. */
-    public record Message(String role, String content, List<Image> images) {
+    /**
+     * A chat message. A user message can carry images and audio (for a model loaded with an mmproj that takes them);
+     * they go before its text, images first.
+     */
+    public record Message(String role, String content, List<Image> images, List<Audio> audio) {
         public Message {
             images = images == null ? List.of() : List.copyOf(images);
+            audio = audio == null ? List.of() : List.copyOf(audio);
         }
+
+        /** A message with images and no audio: the canonical constructor before audio, kept so callers still compile. */
+        public Message(String role, String content, List<Image> images) { this(role, content, images, List.of()); }
 
         public Message(String role, String content) { this(role, content, List.of()); }
 
@@ -193,6 +207,12 @@ public final class LlamaModel implements AutoCloseable {
         public static Message user(String c) { return new Message("user", c); }
         /** A user message with images, for example {@code Message.user("What colour is the square?", Image.of(img))}. */
         public static Message user(String c, Image... images) { return new Message("user", c, List.of(images)); }
+        /**
+         * A user message with audio, for example {@code Message.user("Transcribe audio to text", Audio.readWav(file))}.
+         * Audio at any sample rate and with any channels will do: the model mixes it to mono and resamples it to the
+         * rate its audio encoder takes.
+         */
+        public static Message user(String c, Audio... audio) { return new Message("user", c, List.of(), List.of(audio)); }
         public static Message assistant(String c) { return new Message("assistant", c); }
     }
 
@@ -241,8 +261,8 @@ public final class LlamaModel implements AutoCloseable {
     }
 
     /**
-     * Weights on Hugging Face that Fornax knows by name. A vision language model has an {@link #mmprojFile} (its vision
-     * encoder and projector); {@link LlamaModel#LlamaModel(Weights)} loads both. Fetch them with
+     * Weights on Hugging Face that Fornax knows by name. A vision or speech model has an {@link #mmprojFile} (its
+     * vision or audio encoder and projector); {@link LlamaModel#LlamaModel(Weights)} loads both. Fetch them with
      * {@link #downloadCommand()}; {@link #model()} and {@link #mmproj()} fail with the command for their own file
      * when it's missing.
      */
@@ -292,16 +312,36 @@ public final class LlamaModel implements AutoCloseable {
          * context, for passages of a few hundred tokens (the 0.6B: 1.3 GB). A community conversion with llama.cpp's own
          * script (Voodisss), as Qwen publishes no GGUF of it. Apache-2.0.
          */
-        QWEN3_RERANKER_4B("Voodisss/Qwen3-Reranker-4B-GGUF-llama_cpp", "Qwen3-Reranker-4B.Q8_0.gguf", null);
+        QWEN3_RERANKER_4B("Voodisss/Qwen3-Reranker-4B-GGUF-llama_cpp", "Qwen3-Reranker-4B.Q8_0.gguf", null),
+        /**
+         * Qwen3-ASR 0.6B (Q8_0): speech recognition in 30 languages, from {@link Audio} in a user message (its mmproj
+         * is an audio encoder, with no vision). Ask with {@code "Transcribe audio to text"} (as llama-server does), at
+         * temperature 0. The model writes the language it heard before the transcript
+         * ({@code language English<asr_text>...}); its chat template marks that as reasoning, so the text of
+         * {@link LlamaModel#chat(List, Options) chat} is the transcript alone, and
+         * {@link LlamaModel#chatJson(String, Consumer) chatJson} gives the language as {@code reasoning_content}.
+         * Apache-2.0.
+         */
+        QWEN3_ASR_0_6B("ggml-org/Qwen3-ASR-0.6B-GGUF", "Qwen3-ASR-0.6B-Q8_0.gguf", "mmproj-Qwen3-ASR-0.6B-Q8_0.gguf", false, true),
+        /** Qwen3-ASR 1.7B (Q8_0): {@link #QWEN3_ASR_0_6B}'s larger sibling. Apache-2.0. */
+        QWEN3_ASR_1_7B("ggml-org/Qwen3-ASR-1.7B-GGUF", "Qwen3-ASR-1.7B-Q8_0.gguf", "mmproj-Qwen3-ASR-1.7B-Q8_0.gguf", false, true);
 
         public final String repo, modelFile, mmprojFile;
+        private final boolean vision, audio;
 
-        Weights(String repo, String modelFile, String mmprojFile) {
+        /** A text model (mmprojFile null) or a vision language model. */
+        Weights(String repo, String modelFile, String mmprojFile) { this(repo, modelFile, mmprojFile, mmprojFile != null, false); }
+
+        Weights(String repo, String modelFile, String mmprojFile, boolean vision, boolean audio) {
             this.repo = repo; this.modelFile = modelFile; this.mmprojFile = mmprojFile;
+            this.vision = vision; this.audio = audio;
         }
 
-        /** Whether these weights take images (they come with an mmproj). */
-        public boolean vision() { return mmprojFile != null; }
+        /** Whether these weights take images (their mmproj has a vision encoder). */
+        public boolean vision() { return vision; }
+
+        /** Whether these weights take audio (their mmproj has an audio encoder). */
+        public boolean audio() { return audio; }
 
         public String model() { return HfCache.require(repo, modelFile).toString(); }
 
@@ -348,7 +388,7 @@ public final class LlamaModel implements AutoCloseable {
 
     /** What a model is loaded for. A model loaded for one can't do the others. */
     public enum Mode {
-        /** Text generation: chat, chatJson, extract, complete (and images, with an mmproj). */
+        /** Text generation: chat, chatJson, extract, complete (and images or audio, with an mmproj that takes them). */
         CHAT,
         /**
          * Embeddings: {@link #embed}, with the pooling type the GGUF sets (Qwen3-Embedding: the last token;
@@ -400,7 +440,8 @@ public final class LlamaModel implements AutoCloseable {
     private final MemorySegment handle;    // in-process
     private final Worker.Instance remote;  // isolated
     private final Worker worker;           // isolated
-    private final boolean vision;
+    private final boolean vision, takesAudio;
+    private final int audioRate;      // the audio encoder's sample rate, or -1 when it takes no audio
     private final Mode mode;
     private final int embeddingSize;  // 0 unless EMBED
     private final int slots;          // requests at once: more than 1 only for a model loaded with slots
@@ -413,8 +454,9 @@ public final class LlamaModel implements AutoCloseable {
     public LlamaModel(String ggufPath) { this(ggufPath, -1, 8192); }
 
     /**
-     * A vision language model: the language model's GGUF plus its mmproj GGUF (the vision encoder and projector).
-     * mmprojPath null loads the language model alone. The vision encoder runs on the GPU unless gpuLayers is 0.
+     * A vision (or audio) language model: the language model's GGUF plus its mmproj GGUF (the vision or audio encoder,
+     * or both, and the projector). mmprojPath null loads the language model alone. The encoders run on the GPU unless
+     * gpuLayers is 0.
      * @param gpuLayers -1 offloads every layer. @param contextSize 0 uses the model's trained context.
      */
     public LlamaModel(String ggufPath, String mmprojPath, int gpuLayers, int contextSize) {
@@ -456,7 +498,7 @@ public final class LlamaModel implements AutoCloseable {
      * <p>Every slot has {@code contextSize} tokens of context of its own, so the context takes {@code slots} times the
      * memory, and a request that fills its slot ends with "length" whatever the others do. A consumer of pieces runs
      * on the model's batch thread, so one that blocks holds up every slot; the async and streaming methods hand
-     * pieces to a buffer instead. Not yet: images (a vision alias loads without its mmproj). With
+     * pieces to a buffer instead. Not yet: images and audio (an alias with an mmproj loads without it). With
      * {@code -Dfornax.isolation=process} it loads in a worker process, as {@link #isolated(String, int, int, int)} does,
      * and a consumer of pieces runs on the calling thread instead.
      * @param gpuLayers -1 offloads every layer. @param contextSize each slot's context, in tokens (more than 0; llama.cpp
@@ -490,7 +532,9 @@ public final class LlamaModel implements AutoCloseable {
             ggufPath = located[0];
             mmprojPath = located[1];
             if (slots > 1) {
-                if (askedForMmproj) throw new IllegalArgumentException("images aren't batched yet: load a model with slots without its mmproj");
+                if (askedForMmproj)
+                    throw new IllegalArgumentException(
+                            "images and audio aren't batched yet: load a model with slots without its mmproj");
                 mmprojPath = null;   // a vision alias's mmproj: a model with slots is text only
             }
         } catch (RuntimeException | Error e) {
@@ -499,7 +543,7 @@ public final class LlamaModel implements AutoCloseable {
         }
         String name = Path.of(ggufPath).getFileName().toString();
         if (mode != Mode.CHAT && mmprojPath != null)
-            throw new IllegalArgumentException("an mmproj is for chat with images; " + mode + " takes none");
+            throw new IllegalArgumentException("an mmproj is for chat with images or audio; " + mode + " takes none");
         this.worker = worker;
         if (worker != null) {
             Worker.Instance r = null;
@@ -509,6 +553,8 @@ public final class LlamaModel implements AutoCloseable {
                 Wire.In info = new Wire.In(r.invoke("info", null));
                 vision = info.bool();
                 embeddingSize = info.integer();
+                takesAudio = info.bool();
+                audioRate = info.integer();
             } catch (RuntimeException | Error e) {
                 if (r != null) r.close();
                 if (ownsWorker) worker.close();
@@ -533,7 +579,8 @@ public final class LlamaModel implements AutoCloseable {
                 handle = (MemorySegment) N.CREATE_BATCHED.invokeExact(a.allocateFrom(ggufPath), gpuLayers, contextSize, slots);
                 if (handle.equals(MemorySegment.NULL)) throw new IllegalStateException("fornax_llama_create_batched: " + error());
             } catch (RuntimeException e) { throw e; } catch (Throwable t) { throw new RuntimeException(t); }
-            vision = false;
+            vision = takesAudio = false;
+            audioRate = -1;
             embeddingSize = 0;
             this.slots = slots;
             MemorySegment h = handle;
@@ -561,6 +608,8 @@ public final class LlamaModel implements AutoCloseable {
                     throw new IllegalStateException((mmprojPath == null ? "fornax_llama_create: " : "fornax_llama_create_mm: ") + error());
             }
             vision = mmprojPath != null && (int) N.SUPPORTS_VISION.invokeExact(handle) != 0;
+            takesAudio = mmprojPath != null && (int) N.SUPPORTS_AUDIO.invokeExact(handle) != 0;
+            audioRate = takesAudio ? (int) N.AUDIO_SAMPLE_RATE.invokeExact(handle) : -1;
             embeddingSize = mode == Mode.EMBED ? (int) N.N_EMBD.invokeExact(handle) : 0;
         } catch (RuntimeException e) { throw e; } catch (Throwable t) { throw new RuntimeException(t); }
         MemorySegment h = handle;
@@ -703,6 +752,18 @@ public final class LlamaModel implements AutoCloseable {
     /** Whether this model takes images: it was loaded with an mmproj that has a vision encoder. */
     public boolean supportsVision() { return vision; }
 
+    /**
+     * Whether this model takes {@link Audio}: it was loaded with an mmproj that has an audio encoder (Qwen3-ASR's has
+     * no vision encoder, so such a model takes audio and no images).
+     */
+    public boolean supportsAudio() { return takesAudio; }
+
+    /**
+     * The sample rate this model's audio encoder takes, in Hz (16000 for Qwen3-ASR), or -1 when it takes no audio.
+     * Audio at another rate is resampled to it, so this is only for a caller that wants to send it at that rate already.
+     */
+    public int audioSampleRate() { return audioRate; }
+
     /** What this model was loaded for. */
     public Mode mode() { return mode; }
 
@@ -771,17 +832,28 @@ public final class LlamaModel implements AutoCloseable {
 
     /** {@link #chatJson(String, Consumer)}, on this model's thread. */
     public CompletableFuture<String> chatJsonAsync(String requestJson) {
-        return thread.submit(c -> chatJsonOn(c, requestJson, List.of(), null));
+        return thread.submit(c -> chatJsonOn(c, requestJson, List.of(), List.of(), null));
     }
 
     /** {@link #chatJson(String, List, Consumer)}, on this model's thread. */
     public CompletableFuture<String> chatJsonAsync(String requestJson, List<Image> images) {
-        return thread.submit(c -> chatJsonOn(c, requestJson, images, null));
+        return thread.submit(c -> chatJsonOn(c, requestJson, images, List.of(), null));
     }
 
     /** {@link #chatJson(String, List, Consumer)}, streaming the message's content to a subscriber as chatAsync does. */
     public CompletableFuture<String> chatJsonAsync(String requestJson, List<Image> images, Flow.Subscriber<? super String> content) {
-        return thread.<String, String>submit((c, sink) -> chatJsonOn(c, requestJson, images, sink), content);
+        return thread.<String, String>submit((c, sink) -> chatJsonOn(c, requestJson, images, List.of(), sink), content);
+    }
+
+    /** {@link #chatJson(String, List, List, Consumer)}, on this model's thread. */
+    public CompletableFuture<String> chatJsonAsync(String requestJson, List<Image> images, List<Audio> audio) {
+        return thread.submit(c -> chatJsonOn(c, requestJson, images, audio, null));
+    }
+
+    /** {@link #chatJson(String, List, List, Consumer)}, streaming the message's content to a subscriber as chatAsync does. */
+    public CompletableFuture<String> chatJsonAsync(String requestJson, List<Image> images, List<Audio> audio,
+                                                   Flow.Subscriber<? super String> content) {
+        return thread.<String, String>submit((c, sink) -> chatJsonOn(c, requestJson, images, audio, sink), content);
     }
 
     /** {@link #extract}, on this model's thread. */
@@ -810,8 +882,9 @@ public final class LlamaModel implements AutoCloseable {
 
     /**
      * Formats with the model's chat template and generates. onPiece (optional) streams text as it is produced.
-     * Messages with images need a model loaded with its mmproj; such a chat is formatted with the model's own
-     * (Jinja) chat template, as {@link #chatJson} does, and its prompt token count includes the image tokens.
+     * Messages with images or audio need a model loaded with an mmproj that takes them; such a chat is formatted with
+     * the model's own (Jinja) chat template, as {@link #chatJson} does, and its prompt token count includes the image
+     * and audio tokens. Audio is mixed to mono and resampled to {@link #audioSampleRate()} first.
      */
     public Result chat(List<Message> messages, Options o, Consumer<String> onPiece) {
         return thread.run(c -> chatOn(c, messages, o, onPiece));
@@ -819,11 +892,13 @@ public final class LlamaModel implements AutoCloseable {
 
     Result chatOn(Call call, List<Message> messages, Options o, Consumer<String> onPiece) {
         requireMode(Mode.CHAT, "chat");
-        if (!o.thinking()) {
-            // only a Jinja template takes enable_thinking: chatJson's path, in process, batched or in a worker alike
+        if (!o.thinking() || messages.stream().anyMatch(m -> !m.audio().isEmpty())) {
+            // only a Jinja template takes enable_thinking, and only chatJson's path takes audio: in process, batched or
+            // in a worker alike
             List<Image> images = new ArrayList<>();
-            String request = ChatRequests.chat(messages, o, images);
-            return ChatRequests.result(chatJsonOn(call, request, images, onPiece));
+            List<Audio> audio = new ArrayList<>();
+            String request = ChatRequests.chat(messages, o, images, audio);
+            return ChatRequests.result(chatJsonOn(call, request, images, audio, onPiece));
         }
         if (remote != null)
             return LlamaService.decodeResult(remote(call, "chat", LlamaService.chatArgs(messages, o, onPiece != null), onPiece));
@@ -859,20 +934,28 @@ public final class LlamaModel implements AutoCloseable {
      * Messages and tools use OpenAI's chat completions format. onContent (optional) streams the message content.
      */
     public String chatJson(String requestJson, Consumer<String> onContent) {
-        return thread.run(c -> chatJsonOn(c, requestJson, List.of(), onContent));
+        return thread.run(c -> chatJsonOn(c, requestJson, List.of(), List.of(), onContent));
     }
 
-    String chatJsonOn(Call call, String requestJson, List<Image> images, Consumer<String> onContent) {
+    String chatJsonOn(Call call, String requestJson, List<Image> images, List<Audio> audio, Consumer<String> onContent) {
         requireMode(Mode.CHAT, "chat");
         // before the engine: a schema past what its grammar takes would cost minutes there, or crash it (Schemas)
         Schemas.requireBuildableJson(requestJson, "the request");
-        if (remote != null)
-            return LlamaService.decodeString(remote(call, "chatJson", LlamaService.chatJsonArgs(requestJson, images, onContent != null), onContent));
+        if (!audio.isEmpty()) {
+            if (slots > 1) throw noBatchedAudio();
+            requireAudio();
+            // here, not in the worker: what goes to it is mono at the encoder's rate, a fraction of a stereo 48 kHz clip
+            audio = audio.stream().map(a -> Audio.ofMono(pcm(a), audioRate)).toList();
+        }
+        if (remote != null) {
+            byte[] args = LlamaService.chatJsonArgs(requestJson, images, audio, onContent != null);
+            return LlamaService.decodeString(remote(call, "chatJson", args, onContent));
+        }
         if (batcher != null) {
             if (!images.isEmpty()) throw noBatchedImages();
             return batcher.run(call, () -> addJson(requestJson), onContent);
         }
-        if (!images.isEmpty()) return chatJsonImages(call, requestJson, images, onContent);
+        if (!images.isEmpty() || !audio.isEmpty()) return chatJsonMedia(call, requestJson, images, audio, onContent);
         try (Arena a = Arena.ofConfined()) {
             MemorySegment out = a.allocate(ADDRESS);
             MemorySegment cb = callback(a, call, onContent);
@@ -917,20 +1000,55 @@ public final class LlamaModel implements AutoCloseable {
      * </pre>
      */
     public String chatJson(String requestJson, List<Image> images, Consumer<String> onContent) {
-        return thread.run(c -> chatJsonOn(c, requestJson, images, onContent));
+        return thread.run(c -> chatJsonOn(c, requestJson, images, List.of(), onContent));
     }
 
-    private String chatJsonImages(Call call, String requestJson, List<Image> images, Consumer<String> onContent) {
-        requireVision();
+    /**
+     * {@link #chatJson(String, List, Consumer)} with audio too, for a model whose mmproj has an audio encoder
+     * ({@link #supportsAudio}). In a message's content array, {@code {"type": "audio", "index": i}} stands for
+     * {@code audio.get(i)}, mixed to mono and resampled to {@link #audioSampleRate()}; an OpenAI
+     * {@code {"type": "input_audio", "input_audio": {"data": "<base64>", "format": "wav"}}} part works too (WAV, MP3 or
+     * FLAC, decoded and resampled by llama.cpp, as llama-mtmd-cli reads an audio file), and needs no list here:
+     * <pre>
+     * {"messages": [{"role": "user", "content": [{"type": "audio", "index": 0}, {"type": "text", "text": "Transcribe audio to text"}]}],
+     *  "temperature": 0}
+     * </pre>
+     */
+    public String chatJson(String requestJson, List<Image> images, List<Audio> audio, Consumer<String> onContent) {
+        return thread.run(c -> chatJsonOn(c, requestJson, images, audio, onContent));
+    }
+
+    /** audio: mono at {@link #audioRate} already (chatJsonOn). */
+    private String chatJsonMedia(Call call, String requestJson, List<Image> images, List<Audio> audio,
+                                 Consumer<String> onContent) {
+        if (!images.isEmpty()) requireVision();
         try (Arena a = Arena.ofConfined()) {
             NativeImages img = new NativeImages(a, images);
+            NativeAudio snd = new NativeAudio(a, audio);
             MemorySegment out = a.allocate(ADDRESS);
             MemorySegment cb = callback(a, call, onContent);
-            int rc = (int) N.CHAT_JSON_IMAGES.invokeExact(handle, a.allocateFrom(requestJson), img.rgb, img.widths, img.heights,
-                    img.n, cb, MemorySegment.NULL, out);
+            int rc = (int) N.CHAT_JSON_MEDIA.invokeExact(handle, a.allocateFrom(requestJson), img.rgb, img.widths, img.heights,
+                    img.n, snd.pcm, snd.samples, snd.n, cb, MemorySegment.NULL, out);
             return json(out, rc, call);
         } catch (RuntimeException | Error e) { throw e; } catch (Throwable t) { throw new RuntimeException(t); }
         finally { SINK.remove(); }
+    }
+
+    /** One channel at the encoder's rate: mixed down first, so only one channel is resampled. */
+    private float[] pcm(Audio a) {
+        return pcm(a, audioRate);
+    }
+
+    /** a mixed to mono, then resampled to rate (as the shim takes audio: mtmd doesn't resample raw PCM). */
+    static float[] pcm(Audio a, int rate) {
+        float[] mono = a.mono();
+        return a.sampleRate() == rate ? mono : Audio.resample(mono, a.sampleRate(), rate);
+    }
+
+    private void requireAudio() {
+        if (!takesAudio)
+            throw new IllegalStateException(vision ? "this model takes no audio: its mmproj has no audio encoder"
+                    : "this model takes no audio: load it with an mmproj that has an audio encoder");
     }
 
     /**
@@ -948,8 +1066,9 @@ public final class LlamaModel implements AutoCloseable {
 
     private String extractOn(Call call, List<Message> messages, String jsonSchema, Options o) {
         List<Image> images = new ArrayList<>();
-        String request = ChatRequests.extract(messages, jsonSchema, o, images);
-        Object response = Json.parse(chatJsonOn(call, request, images, null));
+        List<Audio> audio = new ArrayList<>();
+        String request = ChatRequests.extract(messages, jsonSchema, o, images, audio);
+        Object response = Json.parse(chatJsonOn(call, request, images, audio, null));
         if (call.stopRequested()) throw new CancellationException("extract was cancelled");
         Object finish = Json.get(response, "finish_reason");
         if (!"stop".equals(finish)) throw new IllegalStateException("the reply was cut off (" + finish + "); raise maxTokens");
@@ -958,7 +1077,9 @@ public final class LlamaModel implements AutoCloseable {
 
     /**
      * Raw completion of an already-formatted prompt with images: the prompt holds {@link #mediaMarker()} once for each
-     * image, in order, where the model's own image tokens go. Needs a model loaded with its mmproj.
+     * image, in order, where the model's own image tokens go. Needs a model loaded with its mmproj, and takes images
+     * only: audio goes through {@link #chat} or {@link #chatJson(String, List, List, Consumer)}, and a model whose
+     * mmproj has no vision encoder (Qwen3-ASR's) refuses images here as there.
      */
     public Result complete(String prompt, List<Image> images, Options o, Consumer<String> onPiece) {
         return thread.run(c -> images.isEmpty() ? completeOn(c, prompt, o, onPiece) : completeImages(c, prompt, images, o, onPiece));
@@ -982,7 +1103,9 @@ public final class LlamaModel implements AutoCloseable {
     }
 
     private void requireVision() {
-        if (!vision) throw new IllegalStateException("this model takes no images: load it with its mmproj");
+        if (!vision)
+            throw new IllegalStateException(takesAudio ? "this model takes no images: its mmproj has no vision encoder"
+                    : "this model takes no images: load it with its mmproj");
     }
 
     /** Images as the shim takes them: parallel arrays of RGB pointers, widths and heights. */
@@ -1000,6 +1123,23 @@ public final class LlamaModel implements AutoCloseable {
                 rgb.setAtIndex(ADDRESS, i, a.allocateFrom(JAVA_BYTE, img.rgb()));
                 widths.setAtIndex(JAVA_INT, i, img.width());
                 heights.setAtIndex(JAVA_INT, i, img.height());
+            }
+        }
+    }
+
+    /** Audio as the shim takes it: parallel arrays of float PCM pointers and sample counts (the left side: mono already). */
+    private static final class NativeAudio {
+        final MemorySegment pcm, samples;
+        final int n;
+
+        NativeAudio(Arena a, List<Audio> audio) {
+            n = audio.size();
+            pcm = a.allocate(ADDRESS, Math.max(1, n));
+            samples = a.allocate(JAVA_INT, Math.max(1, n));
+            for (int i = 0; i < n; i++) {
+                float[] mono = audio.get(i).left();
+                pcm.setAtIndex(ADDRESS, i, a.allocateFrom(JAVA_FLOAT, mono));
+                samples.setAtIndex(JAVA_INT, i, mono.length);
             }
         }
     }
@@ -1162,6 +1302,10 @@ public final class LlamaModel implements AutoCloseable {
 
     private static IllegalStateException noBatchedImages() {
         return new IllegalStateException("images aren't batched yet: load a model without slots for images");
+    }
+
+    private static IllegalStateException noBatchedAudio() {
+        return new IllegalStateException("audio isn't batched yet: load a model without slots for audio");
     }
 
     private int addJson(String requestJson) {

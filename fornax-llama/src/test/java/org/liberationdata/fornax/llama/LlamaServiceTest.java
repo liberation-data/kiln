@@ -38,7 +38,7 @@ class LlamaServiceTest {
 
     @Test
     void chatJsonAndCompleteArgumentsRoundTrip() {
-        var in = new Wire.In(LlamaService.chatJsonArgs("{\"messages\": []}", List.of(RED), false));
+        var in = new Wire.In(LlamaService.chatJsonArgs("{\"messages\": []}", List.of(RED), List.of(), false));
         assertEquals("{\"messages\": []}", in.string());
         assertImages(List.of(RED), LlamaService.images(in));
         assertFalse(in.bool());
